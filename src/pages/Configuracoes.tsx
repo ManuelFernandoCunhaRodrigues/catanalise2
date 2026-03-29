@@ -5,10 +5,10 @@ import { Separator } from "@/components/ui/separator";
 
 export default function Configuracoes() {
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="max-w-2xl space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold">Configurações</h2>
-        <p className="text-muted-foreground text-sm mt-1">Personalize o comportamento do sistema</p>
+        <h2 className="text-2xl font-semibold">Configuracoes</h2>
+        <p className="mt-1 text-sm text-muted-foreground">Personalize o comportamento do sistema</p>
       </div>
 
       <Card className="shadow-sm">
@@ -18,8 +18,8 @@ export default function Configuracoes() {
         <CardContent className="space-y-4">
           <div className="flex items-center justify-between">
             <Label htmlFor="ocr" className="flex flex-col gap-1">
-              <span>OCR Automático</span>
-              <span className="text-xs text-muted-foreground font-normal">Extrair texto automaticamente ao fazer upload</span>
+              <span>OCR automatico</span>
+              <span className="text-xs font-normal text-muted-foreground">Extrair texto automaticamente ao fazer upload</span>
             </Label>
             <Switch id="ocr" defaultChecked />
           </div>
@@ -27,15 +27,15 @@ export default function Configuracoes() {
           <div className="flex items-center justify-between">
             <Label htmlFor="ia" className="flex flex-col gap-1">
               <span>Feedback por IA</span>
-              <span className="text-xs text-muted-foreground font-normal">Gerar sugestões inteligentes após análise</span>
+              <span className="text-xs font-normal text-muted-foreground">Gerar sugestoes inteligentes apos analise</span>
             </Label>
             <Switch id="ia" defaultChecked />
           </div>
           <Separator />
           <div className="flex items-center justify-between">
             <Label htmlFor="notif" className="flex flex-col gap-1">
-              <span>Notificações</span>
-              <span className="text-xs text-muted-foreground font-normal">Receber alertas sobre validações críticas</span>
+              <span>Notificacoes</span>
+              <span className="text-xs font-normal text-muted-foreground">Receber alertas sobre validacoes criticas</span>
             </Label>
             <Switch id="notif" />
           </div>

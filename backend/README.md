@@ -1,6 +1,6 @@
-# Backend CAT - MVP minimo
+# Backend CAT
 
-Backend simples em FastAPI para receber um PDF de CAT, processar o upload, comparar CAT x ART, salvar historico e expor uma carga pronta para demonstracao.
+Backend em FastAPI para receber uma CAT em PDF, extrair informacoes, validar o documento, comparar com ART, calcular score de confiabilidade e persistir o historico.
 
 ## Estrutura
 
@@ -15,20 +15,22 @@ backend/
   requirements.txt
   services/
     art_integration.py
+    extractor.py
+    feedback.py
+    fraud_detector.py
+    parser.py
     processor.py
+    scorer.py
+    validator.py
 ```
 
 ## Instalacao
 
 ```bash
-pip install fastapi uvicorn python-multipart
-```
-
-Ou usando o arquivo de dependencias:
-
-```bash
 pip install -r requirements.txt
 ```
+
+OCR com `pytesseract` continua opcional. Quando o binario do Tesseract nao estiver instalado, o backend segue funcionando para PDFs com camada de texto.
 
 ## Como rodar
 
@@ -48,23 +50,18 @@ uvicorn main:app --reload
 
 ### `GET /demo`
 
-Retorna uma carga fixa para demonstracoes guiadas do produto.
+Retorna um payload fixo para apresentacoes guiadas.
 
 ### `POST /analyze`
 
-Recebe um arquivo PDF em `multipart/form-data` no campo `file`.
+Recebe um arquivo PDF em `multipart/form-data` no campo `file` e retorna um payload completo com:
 
-```json
-{
-  "filename": "arquivo.pdf",
-  "status": "processado",
-  "resultado": {
-    "mensagem": "Documento recebido com sucesso",
-    "score": 85,
-    "nivel": "medio"
-  }
-}
-```
+- dados extraidos
+- validacao
+- comparacao CAT x ART
+- deteccao de fraude
+- score de confiabilidade
+- feedback inteligente
 
 Toda analise enviada para esse endpoint e salva automaticamente no SQLite.
 
@@ -74,22 +71,18 @@ Retorna o historico resumido das analises salvas.
 
 ### `GET /history/{id}`
 
-Retorna todos os dados de uma analise especifica.
+Retorna os detalhes da analise, incluindo o payload completo persistido.
 
 ### `POST /compare-cat-art`
 
 Compara uma CAT com uma ART informada manualmente ou buscada automaticamente na base simulada.
 
-## Regras basicas do MVP
+## Regras basicas
 
 - aceita apenas arquivos `.pdf`
 - rejeita arquivo vazio
+- rejeita arquivo acima de 10 MB
 - salva o arquivo na pasta `uploads/`
 - salva a analise em `database.db`
-- retorna analise simulada pronta para integracao futura com IA
-- compara CAT e ART com base simulada para auditoria documental
-
-## Observacao
-
-O metodo `process_file` ja usa `async/await` e foi organizado para facilitar a troca da simulacao por uma analise real depois.
-O banco SQLite usa `sqlite3` nativo com queries parametrizadas, JSON string para listas e historico auditavel.
+- usa queries parametrizadas no SQLite
+- restringe CORS por configuracao para evitar `*` com credenciais

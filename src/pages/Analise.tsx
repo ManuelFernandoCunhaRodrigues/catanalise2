@@ -2,31 +2,28 @@ import { useEffect, useMemo, useState, type ElementType } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
+  ArrowRightLeft,
   Brain,
   Building2,
   CheckCircle,
   Download,
   Edit,
-  FileText,
-  HardHat,
-  MapPin,
-  PenTool,
+  FileSearch,
   RefreshCw,
+  ShieldAlert,
   User,
   XCircle,
 } from "lucide-react";
 
 import { fetchHistoryById, type AnalyzeResponse, type HistoryDetailResponse } from "@/lib/api";
 import { getLastAnalysis, saveLastAnalysis } from "@/lib/analysis-store";
-import { getStatusFromScore } from "@/lib/analysis-utils";
-import { mockExtractedData, mockFeedback, mockScore } from "@/data/mockData";
+import { formatBackendDate, formatScoreLevel, getStatusFromScore } from "@/lib/analysis-utils";
 import { ScoreBar } from "@/components/ScoreBar";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-
 
 function SectionHeader({ icon: Icon, title }: { icon: ElementType; title: string }) {
   return (
@@ -37,11 +34,11 @@ function SectionHeader({ icon: Icon, title }: { icon: ElementType; title: string
   );
 }
 
-function Field({ label, value }: { label: string; value: string }) {
+function Field({ label, value }: { label: string; value?: string | number | null }) {
   return (
     <div>
       <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="text-sm">{value}</p>
+      <p className="text-sm">{value ?? "Nao informado"}</p>
     </div>
   );
 }
@@ -70,7 +67,7 @@ function IssueList({
   return (
     <Card className="shadow-sm">
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm flex items-center gap-2">
+        <CardTitle className="flex items-center gap-2 text-sm">
           <Icon className={`h-4 w-4 ${toneClass}`} />
           {title}
         </CardTitle>
@@ -109,6 +106,7 @@ export default function Analise() {
   useEffect(() => {
     if (!analysis?.analysis_id) {
       setAnalysisDetail(null);
+      setDetailError(null);
       setIsDetailLoading(false);
       return;
     }
@@ -119,15 +117,19 @@ export default function Analise() {
 
     fetchHistoryById(analysis.analysis_id)
       .then((detail) => {
-        if (active) {
-          setAnalysisDetail(detail);
+        if (!active) {
+          return;
         }
+
+        setAnalysisDetail(detail);
       })
       .catch((error) => {
-        if (active) {
-          setAnalysisDetail(null);
-          setDetailError(error instanceof Error ? error.message : "Nao foi possivel carregar os detalhes da analise.");
+        if (!active) {
+          return;
         }
+
+        setAnalysisDetail(null);
+        setDetailError(error instanceof Error ? error.message : "Nao foi possivel carregar os detalhes da analise.");
       })
       .finally(() => {
         if (active) {
@@ -140,59 +142,109 @@ export default function Analise() {
     };
   }, [analysis?.analysis_id]);
 
-  const documentData = mockExtractedData;
-  const documentName = analysis?.filename ?? "CAT-2024-0847.pdf";
-  const apiScore = analysis?.resultado.score ?? mockScore.geral;
-  const apiLevel = analysis?.resultado.nivel ?? "medio";
-  const apiMessage = analysis?.resultado.mensagem ?? "Resultado carregado do cenario demonstrativo.";
-  const status = useMemo(() => getStatusFromScore(apiScore), [apiScore]);
-  const scoreColor = apiScore >= 80 ? "text-success" : apiScore >= 50 ? "text-warning" : "text-destructive";
-
-  const validationData = useMemo(() => {
-    if (analysisDetail) {
+  const fullAnalysis = useMemo(() => {
+    if (analysisDetail?.analysis) {
       return {
-        aprovados:
-          analysisDetail.erros.length === 0 && analysisDetail.alertas.length === 0 && analysisDetail.inconsistencias.length === 0
-            ? ["Nenhum problema critico identificado nesta analise."]
-            : ["Documento processado e disponivel para auditoria no historico."],
-        erros: analysisDetail.erros,
-        alertas: analysisDetail.alertas,
-        inconsistencias: analysisDetail.inconsistencias,
+        ...analysisDetail.analysis,
+        analysis_id: analysisDetail.analysis.analysis_id ?? analysisDetail.id,
       };
     }
+    return analysis;
+  }, [analysis, analysisDetail]);
 
-    if (isDetailLoading) {
-      return {
-        aprovados: ["Carregando detalhes da analise..."],
-        erros: ["Carregando erros da analise..."],
-        alertas: ["Carregando alertas da analise..."],
-        inconsistencias: ["Carregando inconsistencias da analise..."],
-      };
-    }
+  const documentName = fullAnalysis?.filename ?? "Sem documento carregado";
+  const finalScore = fullAnalysis?.score_confiabilidade?.score ?? fullAnalysis?.resultado.score ?? 0;
+  const finalLevel = fullAnalysis?.score_confiabilidade?.nivel ?? fullAnalysis?.resultado.nivel;
+  const status = getStatusFromScore(finalScore);
+  const scoreColor = finalScore >= 80 ? "text-success" : finalScore >= 50 ? "text-warning" : "text-destructive";
 
+  const combinedIssues = useMemo(() => {
     return {
-      aprovados: ["Documento processado e disponivel para auditoria no historico."],
-      erros: ["Nenhum erro retornado pela API para esta analise."],
-      alertas: ["Nenhum alerta retornado pela API para esta analise."],
-      inconsistencias: ["Nenhuma inconsistencia retornada pela API para esta analise."],
+      erros: analysisDetail?.erros ?? fullAnalysis?.validacao?.erros ?? [],
+      alertas: dedupe([
+        ...(fullAnalysis?.validacao?.alertas ?? []),
+        ...(analysisDetail?.alertas ?? []),
+      ]),
+      inconsistencias: dedupe([
+        ...(fullAnalysis?.validacao?.inconsistencias ?? []),
+        ...(analysisDetail?.inconsistencias ?? []),
+      ]),
     };
-  }, [analysisDetail, isDetailLoading]);
+  }, [analysisDetail, fullAnalysis]);
 
-  const feedbackText = useMemo(() => {
-    if (!analysisDetail) {
-      return mockFeedback;
+  const approvedItems = useMemo(() => {
+    if (!fullAnalysis) {
+      return [];
     }
 
-    const parts = [
-      ...analysisDetail.erros.map((item) => `Erro identificado: ${item}.`),
-      ...analysisDetail.alertas.map((item) => `Alerta importante: ${item}.`),
-      ...analysisDetail.inconsistencias.map((item) => `Inconsistencia encontrada: ${item}.`),
-    ];
+    if (combinedIssues.erros.length === 0 && combinedIssues.alertas.length === 0 && combinedIssues.inconsistencias.length === 0) {
+      return ["Nenhum problema critico identificado nesta analise."];
+    }
 
-    return parts.length > 0
-      ? `${parts.join(" ")} Recomenda-se revisar o documento antes da aprovacao final.`
-      : "A analise historica nao retornou problemas criticos. O documento esta pronto para seguir no fluxo.";
-  }, [analysisDetail]);
+    return ["Documento processado e disponivel para auditoria detalhada."];
+  }, [combinedIssues.alertas.length, combinedIssues.erros.length, combinedIssues.inconsistencias.length, fullAnalysis]);
+
+  const reportDate = analysisDetail?.data_criacao ? formatBackendDate(analysisDetail.data_criacao) : null;
+  const feedbackItems = fullAnalysis.feedback_inteligente?.feedback ?? [];
+  const recommendations = fullAnalysis.feedback_inteligente?.recomendacoes ?? [];
+  const scoreJustifications = fullAnalysis.score_confiabilidade?.justificativa ?? [];
+
+  const handleDownloadReport = () => {
+    if (!fullAnalysis) {
+      return;
+    }
+
+    const reportPayload = {
+      generated_at: new Date().toISOString(),
+      analysis_id: fullAnalysis.analysis_id ?? analysisDetail?.id ?? null,
+      analysis: fullAnalysis,
+      history_summary: analysisDetail
+        ? {
+            id: analysisDetail.id,
+            score: analysisDetail.score,
+            nivel: analysisDetail.nivel,
+            data_criacao: analysisDetail.data_criacao,
+          }
+        : null,
+    };
+
+    const blob = new Blob([JSON.stringify(reportPayload, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${sanitizeFilename(documentName.replace(/\.pdf$/i, "")) || "analise-cat"}-relatorio.json`;
+    link.click();
+    window.URL.revokeObjectURL(url);
+  };
+
+  if (!fullAnalysis) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h2 className="text-2xl font-semibold">Resultado da Analise</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Nenhuma analise esta disponivel no momento.</p>
+        </div>
+
+        <Card className="max-w-2xl shadow-sm">
+          <CardContent className="space-y-4 pt-6">
+            <p className="text-sm text-muted-foreground">
+              Envie uma CAT na tela de upload ou abra uma analise a partir do historico para ver os detalhes completos.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={() => navigate("/upload")}>
+                <Edit className="mr-1.5 h-3.5 w-3.5" />
+                Fazer upload
+              </Button>
+              <Button variant="outline" onClick={() => navigate("/historico")}>
+                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                Ver historico
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -210,9 +262,9 @@ export default function Analise() {
             <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
             Ver historico
           </Button>
-          <Button size="sm" disabled>
+          <Button size="sm" onClick={handleDownloadReport}>
             <Download className="mr-1.5 h-3.5 w-3.5" />
-            Relatorio
+            Baixar relatorio
           </Button>
         </div>
       </div>
@@ -221,32 +273,40 @@ export default function Analise() {
         <CardContent className="flex flex-col gap-4 pt-6 md:flex-row md:items-center md:justify-between">
           <div className="space-y-2">
             <p className="text-sm font-medium">Resumo da API</p>
-            <p className="text-sm text-muted-foreground">{apiMessage}</p>
-            {analysis?.analysis_id && <p className="text-xs text-muted-foreground">ID da analise: {analysis.analysis_id}</p>}
+            <p className="text-sm text-muted-foreground">{fullAnalysis.resultado.mensagem}</p>
+            <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+              {fullAnalysis.analysis_id && <span>ID da analise: {fullAnalysis.analysis_id}</span>}
+              {reportDate && <span>Registrada em: {reportDate}</span>}
+              {fullAnalysis.comparacao_art?.art_encontrada?.numero_art && (
+                <span>ART relacionada: {fullAnalysis.comparacao_art.art_encontrada.numero_art}</span>
+              )}
+            </div>
             {detailError && <p className="text-xs text-destructive">{detailError}</p>}
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <StatusBadge status={status} />
-            <span className={`text-2xl font-bold ${scoreColor}`}>{apiScore}</span>
-            <span className="text-sm capitalize text-muted-foreground">{apiLevel}</span>
+            <span className={`text-2xl font-bold ${scoreColor}`}>{finalScore}</span>
+            <span className="text-sm text-muted-foreground">{formatScoreLevel(finalLevel)}</span>
           </div>
         </CardContent>
       </Card>
 
       <Tabs defaultValue="extracao" className="space-y-4">
-        <TabsList className="grid w-full max-w-lg grid-cols-4">
+        <TabsList className="grid w-full max-w-3xl grid-cols-5">
           <TabsTrigger value="extracao">Extracao</TabsTrigger>
           <TabsTrigger value="validacao">Validacao</TabsTrigger>
+          <TabsTrigger value="fraude">Fraude</TabsTrigger>
           <TabsTrigger value="score">Score</TabsTrigger>
-          <TabsTrigger value="feedback">Feedback IA</TabsTrigger>
+          <TabsTrigger value="feedback">Feedback</TabsTrigger>
         </TabsList>
 
         <TabsContent value="extracao" className="space-y-4">
           <Card className="shadow-sm">
-            <CardContent className="grid gap-4 pt-6 md:grid-cols-3">
+            <CardContent className="grid gap-4 pt-6 md:grid-cols-4">
               <Field label="Documento" value={documentName} />
-              <Field label="Status" value={analysis?.status ?? "processado"} />
-              <Field label="Nivel retornado" value={apiLevel} />
+              <Field label="Status" value={fullAnalysis.status} />
+              <Field label="Nivel final" value={formatScoreLevel(finalLevel)} />
+              <Field label="ID da analise" value={fullAnalysis.analysis_id ?? analysisDetail?.id ?? "Nao informado"} />
             </CardContent>
           </Card>
 
@@ -254,96 +314,39 @@ export default function Analise() {
             <Card className="shadow-sm">
               <CardContent className="space-y-5 pt-5">
                 <div>
-                  <SectionHeader icon={MapPin} title="Dados da Obra/Servico" />
-                  <div className="grid grid-cols-2 gap-3">
-                    <Field label="Contrato" value={documentData.obra.contrato} />
-                    <Field label="Prazo" value={documentData.obra.prazoContratual} />
-                    <Field label="Inicio" value={documentData.obra.periodoInicio} />
-                    <Field label="Fim" value={documentData.obra.periodoFim} />
-                    <div className="col-span-2">
-                      <Field label="Endereco" value={documentData.obra.endereco} />
-                    </div>
-                    <Field label="Parcelas Executadas" value={documentData.obra.parcelasExecutadas} />
+                  <SectionHeader icon={User} title="Dados principais extraidos" />
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field label="Profissional" value={fullAnalysis.dados_extraidos?.nome_profissional} />
+                    <Field label="Numero ART" value={fullAnalysis.dados_extraidos?.numero_art} />
+                    <Field label="Data de inicio" value={fullAnalysis.dados_extraidos?.data_inicio} />
+                    <Field label="Data de fim" value={fullAnalysis.dados_extraidos?.data_fim} />
+                    <Field label="Data de execucao" value={fullAnalysis.dados_extraidos?.data_execucao} />
+                    <Field label="Contratante" value={fullAnalysis.dados_extraidos?.contratante} />
                   </div>
                 </div>
                 <Separator />
                 <div>
-                  <SectionHeader icon={User} title="Contratante" />
-                  <div className="grid grid-cols-2 gap-3">
-                    <Field label="Tipo" value={documentData.contratante.tipo} />
-                    <Field label="Documento" value={documentData.contratante.documento} />
-                    <div className="col-span-2">
-                      <Field label="Nome/Razao Social" value={documentData.contratante.nome} />
-                    </div>
-                  </div>
-                </div>
-                <Separator />
-                <div>
-                  <SectionHeader icon={Building2} title="Contratada" />
-                  <div className="grid grid-cols-2 gap-3">
-                    <Field label="Razao Social" value={documentData.contratada.razaoSocial} />
-                    <Field label="CNPJ" value={documentData.contratada.cnpj} />
-                  </div>
+                  <SectionHeader icon={Building2} title="Descricao do servico" />
+                  <p className="text-sm text-muted-foreground">
+                    {fullAnalysis.dados_extraidos?.descricao_servico ?? "Nao foi possivel identificar a descricao do servico."}
+                  </p>
                 </div>
               </CardContent>
             </Card>
 
-            <div className="space-y-4">
-              <Card className="shadow-sm">
-                <CardContent className="pt-5">
-                  <SectionHeader icon={HardHat} title="Responsaveis Tecnicos" />
-                  <div className="space-y-3">
-                    {documentData.responsaveis.map((responsavel) => (
-                      <div key={`${responsavel.nome}-${responsavel.rnp}`} className="space-y-1.5 rounded-lg bg-secondary/50 p-3">
-                        <p className="text-sm font-medium">{responsavel.nome}</p>
-                        <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                          <span>Titulo: {responsavel.titulo}</span>
-                          <span>RNP: {responsavel.rnp}</span>
-                          <span className="col-span-2">CREA: {responsavel.crea}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card className="shadow-sm">
-                <CardContent className="pt-5">
-                  <SectionHeader icon={FileText} title="Descricao dos Servicos" />
-                  <p className="mb-3 text-sm text-muted-foreground">{documentData.servicos.descricao}</p>
-                  <div className="overflow-hidden rounded-lg border">
-                    <table className="w-full text-sm">
-                      <thead className="bg-secondary/50">
-                        <tr>
-                          <th className="p-2 text-left font-medium">Item</th>
-                          <th className="p-2 text-left font-medium">Un.</th>
-                          <th className="p-2 text-right font-medium">Qtd.</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {documentData.servicos.quantitativos.map((quantitativo) => (
-                          <tr key={`${quantitativo.item}-${quantitativo.unidade}`} className="border-t">
-                            <td className="p-2">{quantitativo.item}</td>
-                            <td className="p-2">{quantitativo.unidade}</td>
-                            <td className="p-2 text-right">{quantitativo.quantidade}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card className="shadow-sm">
-                <CardContent className="pt-5">
-                  <SectionHeader icon={PenTool} title="Assinaturas" />
-                  <div className="space-y-2">
-                    <Field label="Representante do Contratante" value={documentData.assinaturas.representanteContratante} />
-                    <Field label="Profissional Habilitado" value={documentData.assinaturas.profissionalHabilitado} />
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
+            <Card className="shadow-sm">
+              <CardContent className="space-y-5 pt-5">
+                <div>
+                  <SectionHeader icon={FileSearch} title="Texto extraido" />
+                  <p className="text-xs text-muted-foreground">
+                    {fullAnalysis.texto_extraido ? `${fullAnalysis.texto_extraido.length} caracteres extraidos do PDF.` : "Nenhum texto extraido foi retornado."}
+                  </p>
+                </div>
+                <div className="max-h-[360px] overflow-auto rounded-lg border bg-muted/30 p-4 text-sm leading-6 text-muted-foreground">
+                  {fullAnalysis.texto_extraido ?? "Texto extraido indisponivel para esta analise."}
+                </div>
+              </CardContent>
+            </Card>
           </div>
         </TabsContent>
 
@@ -352,55 +355,200 @@ export default function Analise() {
             <IssueList
               title="Aprovados"
               icon={CheckCircle}
-              items={validationData.aprovados}
+              items={approvedItems}
               emptyText="Nenhum item aprovado automaticamente."
               tone="success"
             />
-            <IssueList title="Erros" icon={XCircle} items={validationData.erros} emptyText="Nenhum erro identificado." tone="error" />
+            <IssueList title="Erros" icon={XCircle} items={combinedIssues.erros} emptyText="Nenhum erro identificado." tone="error" />
             <IssueList
               title="Alertas e Inconsistencias"
               icon={AlertTriangle}
-              items={[...validationData.alertas, ...validationData.inconsistencias]}
+              items={dedupe([...combinedIssues.alertas, ...combinedIssues.inconsistencias])}
               emptyText="Nenhum alerta identificado."
               tone="warning"
             />
           </div>
+
+          <Card className="shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <ArrowRightLeft className="h-4 w-4 text-primary" />
+                Comparacao CAT x ART
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap items-center gap-3">
+                <StatusBadge status={fullAnalysis.comparacao_art?.consistente ? "Aprovado" : "Revisao"} />
+                <p className="text-sm text-muted-foreground">
+                  {fullAnalysis.comparacao_art?.resumo ?? "Nenhuma comparacao ART foi retornada para esta analise."}
+                </p>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <IssueList
+                  title="Inconsistencias de comparacao"
+                  icon={XCircle}
+                  items={fullAnalysis.comparacao_art?.inconsistencias ?? []}
+                  emptyText="Nenhuma inconsistencia entre CAT e ART foi encontrada."
+                  tone="error"
+                />
+                <IssueList
+                  title="Alertas de comparacao"
+                  icon={AlertTriangle}
+                  items={fullAnalysis.comparacao_art?.alertas ?? []}
+                  emptyText="Nenhum alerta adicional foi retornado."
+                  tone="warning"
+                />
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="fraude" className="space-y-4">
+          <Card className="shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <ShieldAlert className="h-4 w-4 text-destructive" />
+                Sinais de risco documental
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap items-center gap-3">
+                <StatusBadge status={fullAnalysis.fraude?.fraude_detectada ? "Reprovado" : "Aprovado"} />
+                <span className="text-sm text-muted-foreground">
+                  Nivel de risco: {formatScoreLevel(fullAnalysis.fraude?.nivel_risco)}
+                </span>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <IssueList
+                  title="Indicadores"
+                  icon={AlertTriangle}
+                  items={fullAnalysis.fraude?.indicadores ?? []}
+                  emptyText="Nenhum indicador de risco foi retornado."
+                  tone={fullAnalysis.fraude?.fraude_detectada ? "error" : "success"}
+                />
+                <IssueList
+                  title="Detalhes"
+                  icon={ShieldAlert}
+                  items={fullAnalysis.fraude?.detalhes ?? []}
+                  emptyText="Nenhuma explicacao detalhada foi retornada."
+                  tone="warning"
+                />
+              </div>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="score" className="space-y-4">
-          <Card className="max-w-lg shadow-sm">
+          <Card className="max-w-3xl shadow-sm">
             <CardContent className="space-y-6 pt-6">
               <div className="text-center">
-                <p className="mb-1 text-sm text-muted-foreground">Score Geral</p>
-                <p className={`text-5xl font-bold ${scoreColor}`}>{apiScore}</p>
+                <p className="mb-1 text-sm text-muted-foreground">Score Final de Confiabilidade</p>
+                <p className={`text-5xl font-bold ${scoreColor}`}>{finalScore}</p>
                 <p className="mt-1 text-xs text-muted-foreground">de 100 pontos</p>
               </div>
               <Separator />
               <div className="space-y-4">
-                <ScoreBar label="Completude" score={Math.max(35, apiScore)} />
-                <ScoreBar label="Consistencia" score={Math.max(25, apiScore - 8)} />
-                <ScoreBar label="Confiabilidade" score={apiScore} />
+                <ScoreBar label="Validacao automatica" score={fullAnalysis.validacao?.score ?? finalScore} />
+                <ScoreBar label="Confiabilidade final" score={finalScore} />
+                <ScoreBar label="Risco invertido" score={mapRiskToConfidence(fullAnalysis.fraude?.nivel_risco)} />
               </div>
+              <div className="space-y-2 rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground">
+                <p className="font-medium text-foreground">Resumo</p>
+                <p>{fullAnalysis.score_confiabilidade?.resumo ?? fullAnalysis.resultado.mensagem}</p>
+              </div>
+              {scoreJustifications.length ? (
+                <div className="space-y-2">
+                  {scoreJustifications.map((item) => (
+                    <div key={item} className="rounded-lg border bg-background p-3 text-sm">
+                      {item}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </CardContent>
           </Card>
         </TabsContent>
 
         <TabsContent value="feedback" className="space-y-4">
-          <Card className="max-w-2xl shadow-sm">
+          <Card className="max-w-3xl shadow-sm">
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm flex items-center gap-2">
+              <CardTitle className="flex items-center gap-2 text-sm">
                 <Brain className="h-4 w-4 text-primary" />
-                Feedback Inteligente
+                Feedback inteligente
               </CardTitle>
             </CardHeader>
-            <CardContent>
-              <div className="rounded-lg border border-primary/10 bg-accent/50 p-4">
-                <p className="text-sm leading-relaxed">{feedbackText || mockFeedback}</p>
+            <CardContent className="space-y-4">
+              {feedbackItems.length ? (
+                feedbackItems.map((item) => (
+                  <div key={`${item.tipo}-${item.mensagem}`} className="rounded-xl border border-border bg-muted/30 p-4">
+                    <p className="text-sm font-medium">{item.mensagem}</p>
+                    <p className="mt-2 text-sm text-muted-foreground">{item.sugestao}</p>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
+                  Nenhum feedback adicional foi retornado pela API.
+                </div>
+              )}
+
+              <div className="rounded-xl border border-primary/10 bg-primary/5 p-4">
+                <p className="text-sm leading-6">
+                  {fullAnalysis.feedback_inteligente?.resumo_geral ?? "Nao ha resumo adicional para esta analise."}
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Recomendacoes prioritarias</p>
+                {recommendations.length > 0 ? (
+                  recommendations.map((item) => (
+                    <div key={item} className="rounded-lg border bg-background p-3 text-sm">
+                      {item}
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+                    Nenhuma recomendacao adicional foi retornada.
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
         </TabsContent>
       </Tabs>
+
+      {isDetailLoading && (
+        <p className="text-xs text-muted-foreground">
+          Atualizando detalhes completos da analise a partir do historico...
+        </p>
+      )}
     </div>
   );
+}
+
+function dedupe(items: string[]): string[] {
+  return Array.from(new Set(items));
+}
+
+function mapRiskToConfidence(riskLevel: string | undefined): number {
+  if (!riskLevel) {
+    return 100;
+  }
+
+  const normalized = riskLevel
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+
+  if (normalized === "alto") {
+    return 20;
+  }
+  if (normalized === "medio") {
+    return 55;
+  }
+  return 80;
+}
+
+function sanitizeFilename(value: string): string {
+  return value.replace(/[^a-zA-Z0-9-_]+/g, "-").replace(/^-+|-+$/g, "");
 }

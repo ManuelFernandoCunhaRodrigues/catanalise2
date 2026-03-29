@@ -11,6 +11,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 type UploadState = "idle" | "uploaded" | "processing" | "done";
 
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+
 export default function UploadCAT() {
   const [state, setState] = useState<UploadState>("idle");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -25,32 +27,62 @@ export default function UploadCAT() {
     };
   }, []);
 
-  const prepareFile = useCallback((file?: File | null) => {
-    if (!file) {
-      return;
-    }
-
-    if (!file.name.toLowerCase().endsWith(".pdf")) {
-      toast({
-        title: "Arquivo invalido",
-        description: "Selecione um arquivo PDF para continuar.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setSelectedFile(file);
-    setState("uploaded");
+  const resetSelection = useCallback(() => {
+    setSelectedFile(null);
+    setState("idle");
   }, []);
 
-  const handleDrop = useCallback((event: DragEvent<HTMLLabelElement>) => {
-    event.preventDefault();
-    prepareFile(event.dataTransfer.files[0]);
-  }, [prepareFile]);
+  const prepareFile = useCallback(
+    (file?: File | null) => {
+      if (!file) {
+        resetSelection();
+        return;
+      }
 
-  const handleFileSelect = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    prepareFile(event.target.files?.[0] ?? null);
-  }, [prepareFile]);
+      const isPdfByName = file.name.toLowerCase().endsWith(".pdf");
+      const isPdfByMime = !file.type || file.type === "application/pdf";
+
+      if (!isPdfByName || !isPdfByMime) {
+        resetSelection();
+        toast({
+          title: "Arquivo invalido",
+          description: "Selecione um arquivo PDF para continuar.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (file.size > MAX_FILE_SIZE_BYTES) {
+        resetSelection();
+        toast({
+          title: "Arquivo muito grande",
+          description: "O arquivo precisa ter no maximo 10MB.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setSelectedFile(file);
+      setState("uploaded");
+    },
+    [resetSelection],
+  );
+
+  const handleDrop = useCallback(
+    (event: DragEvent<HTMLLabelElement>) => {
+      event.preventDefault();
+      prepareFile(event.dataTransfer.files[0]);
+    },
+    [prepareFile],
+  );
+
+  const handleFileSelect = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      prepareFile(event.target.files?.[0] ?? null);
+      event.target.value = "";
+    },
+    [prepareFile],
+  );
 
   const handleProcess = useCallback(async () => {
     if (!selectedFile) {
@@ -120,9 +152,14 @@ export default function UploadCAT() {
                     <p className="text-xs text-muted-foreground">Pronto para processar</p>
                   </div>
                 </div>
-                <Button onClick={handleProcess} className="w-full">
-                  Processar CAT
-                </Button>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Button onClick={handleProcess} className="w-full">
+                    Processar CAT
+                  </Button>
+                  <Button variant="outline" onClick={resetSelection} className="w-full">
+                    Escolher outro arquivo
+                  </Button>
+                </div>
               </motion.div>
             )}
 
@@ -140,12 +177,12 @@ export default function UploadCAT() {
                   <p className="mt-1 text-xs text-muted-foreground">Enviando para o backend e registrando a analise</p>
                 </div>
                 <div className="w-full max-w-xs space-y-2">
-                  {["Validando arquivo", "Executando analise", "Salvando no historico"].map((step, index) => (
+                  {["Validando arquivo", "Extraindo conteudo", "Aplicando regras", "Salvando no historico"].map((step, index) => (
                     <motion.div
                       key={step}
                       initial={{ opacity: 0, x: -10 }}
                       animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: index * 0.25 }}
+                      transition={{ delay: index * 0.2 }}
                       className="flex items-center gap-2 text-xs text-muted-foreground"
                     >
                       <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />

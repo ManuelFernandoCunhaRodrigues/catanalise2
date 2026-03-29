@@ -1,6 +1,6 @@
 from datetime import datetime
 from difflib import SequenceMatcher
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 import unicodedata
 
 
@@ -20,15 +20,15 @@ ART_DATABASE = {
 }
 
 
-def compare_cat_with_art(cat_data: dict, art_data: dict = None) -> dict:
+def compare_cat_with_art(cat_data: dict[str, Any], art_data: dict[str, Any] | None = None) -> dict[str, Any]:
     """
-    Faz o cruzamento entre CAT e ART de forma explicavel.
+    Compares CAT data with the ART provided manually or resolved from the simulated base.
     """
     normalized_cat = _normalize_document(cat_data)
     resolved_art, resolution_alerts = _resolve_art(normalized_cat, art_data)
 
-    inconsistencies: List[str] = []
-    alerts: List[str] = list(resolution_alerts)
+    inconsistencies: list[str] = []
+    alerts: list[str] = list(resolution_alerts)
 
     inconsistencies.extend(compare_art_number(normalized_cat, resolved_art))
     inconsistencies.extend(compare_professional(normalized_cat, resolved_art))
@@ -43,11 +43,12 @@ def compare_cat_with_art(cat_data: dict, art_data: dict = None) -> dict:
         "inconsistencias": inconsistencies,
         "alertas": alerts,
         "resumo": generate_summary(inconsistencies, alerts, resolved_art),
+        "art_encontrada": resolved_art,
     }
 
 
-def compare_art_number(cat_data: dict, art_data: Optional[dict]) -> List[str]:
-    inconsistencies: List[str] = []
+def compare_art_number(cat_data: dict[str, Optional[str]], art_data: Optional[dict[str, Optional[str]]]) -> list[str]:
+    inconsistencies: list[str] = []
 
     cat_art = cat_data.get("numero_art")
     art_number = (art_data or {}).get("numero_art")
@@ -58,8 +59,8 @@ def compare_art_number(cat_data: dict, art_data: Optional[dict]) -> List[str]:
     return inconsistencies
 
 
-def compare_professional(cat_data: dict, art_data: Optional[dict]) -> List[str]:
-    inconsistencies: List[str] = []
+def compare_professional(cat_data: dict[str, Optional[str]], art_data: Optional[dict[str, Optional[str]]]) -> list[str]:
+    inconsistencies: list[str] = []
 
     cat_name = cat_data.get("nome_profissional")
     art_name = (art_data or {}).get("nome_profissional")
@@ -74,34 +75,31 @@ def compare_professional(cat_data: dict, art_data: Optional[dict]) -> List[str]:
     return inconsistencies
 
 
-def compare_dates(cat_data: dict, art_data: Optional[dict]) -> List[str]:
-    inconsistencies: List[str] = []
+def compare_dates(cat_data: dict[str, Optional[str]], art_data: Optional[dict[str, Optional[str]]]) -> list[str]:
+    inconsistencies: list[str] = []
 
     if not art_data:
         return inconsistencies
 
-    cat_start = _parse_date(cat_data.get("data_inicio"))
+    cat_start = _parse_date(cat_data.get("data_inicio") or cat_data.get("data_execucao"))
     cat_end = _parse_date(cat_data.get("data_fim"))
     art_start = _parse_date(art_data.get("data_inicio"))
     art_end = _parse_date(art_data.get("data_fim"))
 
-    if not all([cat_start, cat_end, art_start, art_end]):
-        return inconsistencies
-
-    if cat_start < art_start:
+    if cat_start and art_start and cat_start < art_start:
         inconsistencies.append("Data de inicio da CAT esta antes do periodo registrado na ART.")
 
-    if cat_end > art_end:
+    if cat_end and art_end and cat_end > art_end:
         inconsistencies.append("Data de fim da CAT ultrapassa o periodo registrado na ART.")
 
     return inconsistencies
 
 
-def compare_description_vs_period(cat_data: dict) -> List[str]:
-    alerts: List[str] = []
+def compare_description_vs_period(cat_data: dict[str, Optional[str]]) -> list[str]:
+    alerts: list[str] = []
 
     description = str(cat_data.get("descricao_servico") or "").strip()
-    cat_start = _parse_date(cat_data.get("data_inicio"))
+    cat_start = _parse_date(cat_data.get("data_inicio") or cat_data.get("data_execucao"))
     cat_end = _parse_date(cat_data.get("data_fim"))
 
     if not description or not cat_start or not cat_end:
@@ -116,7 +114,7 @@ def compare_description_vs_period(cat_data: dict) -> List[str]:
     return alerts
 
 
-def generate_summary(inconsistencies: List[str], alerts: List[str], art_data: Optional[dict]) -> str:
+def generate_summary(inconsistencies: list[str], alerts: list[str], art_data: Optional[dict[str, Optional[str]]]) -> str:
     if inconsistencies:
         return (
             "Os dados da CAT estao inconsistentes com a ART analisada, especialmente em campos essenciais do documento. "
@@ -134,11 +132,14 @@ def generate_summary(inconsistencies: List[str], alerts: List[str], art_data: Op
             "Revise os alertas antes de aprovar o documento."
         )
 
-    return "Os dados da CAT estao compativeis com a ART analisada e nao foram encontradas inconsistencias relevantes."
+    if art_data:
+        return "Os dados da CAT estao compativeis com a ART analisada e nao foram encontradas inconsistencias relevantes."
+
+    return "Nao foi possivel comparar a CAT com uma ART, mas nao foram encontradas inconsistencias documentais adicionais."
 
 
-def _resolve_art(cat_data: dict, art_data: Optional[dict]) -> tuple[Optional[dict], List[str]]:
-    alerts: List[str] = []
+def _resolve_art(cat_data: dict[str, Optional[str]], art_data: Optional[dict[str, Any]]) -> tuple[Optional[dict[str, Optional[str]]], list[str]]:
+    alerts: list[str] = []
 
     if art_data:
         return _normalize_document(art_data), alerts
@@ -157,7 +158,7 @@ def _resolve_art(cat_data: dict, art_data: Optional[dict]) -> tuple[Optional[dic
     return _normalize_document(fetched_art), alerts
 
 
-def _normalize_document(data: Optional[dict]) -> Dict[str, Optional[str]]:
+def _normalize_document(data: Optional[dict[str, Any]]) -> dict[str, Optional[str]]:
     if not data:
         return {}
 
@@ -166,7 +167,9 @@ def _normalize_document(data: Optional[dict]) -> Dict[str, Optional[str]]:
         "nome_profissional": _clean_value(data.get("nome_profissional")),
         "data_inicio": _clean_value(data.get("data_inicio")),
         "data_fim": _clean_value(data.get("data_fim")),
+        "data_execucao": _clean_value(data.get("data_execucao")),
         "descricao_servico": _clean_value(data.get("descricao_servico")),
+        "contratante": _clean_value(data.get("contratante")),
     }
 
 
@@ -192,9 +195,9 @@ def _normalize_text(value: str) -> str:
     return " ".join(without_accents.split())
 
 
-def _dedupe(items: List[str]) -> List[str]:
+def _dedupe(items: list[str]) -> list[str]:
     seen = set()
-    result: List[str] = []
+    result: list[str] = []
     for item in items:
         if item not in seen:
             seen.add(item)
