@@ -1,5 +1,6 @@
 import { LayoutDashboard, Upload, Search, History, Settings, Presentation } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
+import { BRAND_ICON_URL, IS_PUBLIC_DEMO } from "@/lib/runtime-config";
 
 import {
   Sidebar,
@@ -23,6 +24,8 @@ const menuItems = [
   { title: "Configuracoes", url: "/configuracoes", icon: Settings },
 ];
 
+const visibleMenuItems = IS_PUBLIC_DEMO ? [{ title: "Modo Demo", url: "/", icon: Presentation }] : menuItems;
+
 export function AppSidebar() {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
@@ -32,7 +35,7 @@ export function AppSidebar() {
       <SidebarHeader className="p-4">
         <div className="flex flex-col items-center justify-center">
           <div className="flex items-center gap-2">
-            <img src="/lovable-uploads/deserdeck-icon.png" alt="Deserdeck RH Icon" className="h-12 w-12 object-contain" />
+            <img src={BRAND_ICON_URL} alt="Deserdeck RH Icon" className="h-12 w-12 object-contain" />
             {!collapsed && <span className="text-lg font-bold text-sidebar-foreground">Deserdeck RH</span>}
           </div>
           {!collapsed && <p className="mt-0.5 text-[10px] text-sidebar-muted">Analise Inteligente</p>}
@@ -45,7 +48,7 @@ export function AppSidebar() {
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {menuItems.map((item) => (
+              {visibleMenuItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton asChild>
                     <NavLink
