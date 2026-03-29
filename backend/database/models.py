@@ -1,9 +1,30 @@
 import json
-import sqlite3
+from datetime import datetime
 from typing import Any, Dict
 
+from sqlalchemy import DateTime, Integer, Text, func
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-def row_to_analysis_summary(row: sqlite3.Row) -> Dict[str, Any]:
+
+class Base(DeclarativeBase):
+    pass
+
+
+class AnalysisRecord(Base):
+    __tablename__ = "analyses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    filename: Mapped[str] = mapped_column(Text, nullable=False)
+    score: Mapped[int] = mapped_column(Integer, nullable=False)
+    nivel: Mapped[str] = mapped_column(Text, nullable=False)
+    erros: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    alertas: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    inconsistencias: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    analysis_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    data_criacao: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+def row_to_analysis_summary(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": row["id"],
         "filename": row["filename"],
@@ -13,7 +34,7 @@ def row_to_analysis_summary(row: sqlite3.Row) -> Dict[str, Any]:
     }
 
 
-def row_to_analysis_detail(row: sqlite3.Row) -> Dict[str, Any]:
+def row_to_analysis_detail(row: Dict[str, Any]) -> Dict[str, Any]:
     errors = _load_json_list(row["erros"])
     alerts = _load_json_list(row["alertas"])
     inconsistencies = _load_json_list(row["inconsistencias"])

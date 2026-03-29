@@ -1,64 +1,70 @@
-import sqlite3
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
 
-DB_PATH = Path(__file__).resolve().parent.parent / "database.db"
+from database.models import Base
+
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_SQLITE_URL = f"sqlite:///{(BASE_DIR / 'database.db').as_posix()}"
 ANALYSIS_TABLE = "analyses"
 
+_engine: Engine | None = None
+_session_factory: sessionmaker[Session] | None = None
 
-def get_connection() -> sqlite3.Connection:
-    connection = sqlite3.connect(DB_PATH, timeout=10)
-    connection.row_factory = sqlite3.Row
-    return connection
+
+def get_database_url() -> str:
+    return os.getenv("DATABASE_URL", DEFAULT_SQLITE_URL)
+
+
+def get_engine() -> Engine:
+    global _engine
+
+    if _engine is None:
+        database_url = get_database_url()
+        connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
+        _engine = create_engine(database_url, future=True, pool_pre_ping=True, connect_args=connect_args)
+
+    return _engine
+
+
+def get_session_factory() -> sessionmaker[Session]:
+    global _session_factory
+
+    if _session_factory is None:
+        _session_factory = sessionmaker(bind=get_engine(), autoflush=False, autocommit=False, future=True)
+
+    return _session_factory
 
 
 @contextmanager
-def connection_context() -> Iterator[sqlite3.Connection]:
-    """
-    Garante commit, rollback e fechamento real da conexao.
-    """
-    connection = get_connection()
+def session_context() -> Iterator[Session]:
+    session = get_session_factory()()
     try:
-        yield connection
-        connection.commit()
+        yield session
+        session.commit()
     except Exception:
-        connection.rollback()
+        session.rollback()
         raise
     finally:
-        connection.close()
+        session.close()
 
 
 def init_db() -> None:
-    """
-    Cria o banco e garante migracoes simples do schema para a demo.
-    """
-    with connection_context() as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS analyses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                filename TEXT NOT NULL,
-                score INTEGER NOT NULL,
-                nivel TEXT NOT NULL,
-                erros TEXT NOT NULL,
-                alertas TEXT NOT NULL,
-                inconsistencias TEXT NOT NULL,
-                analysis_payload TEXT,
-                data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        _ensure_column(connection, ANALYSIS_TABLE, "analysis_payload", "TEXT")
+    engine = get_engine()
+    Base.metadata.create_all(bind=engine)
+    _ensure_column(engine, ANALYSIS_TABLE, "analysis_payload", "TEXT")
 
 
-def _ensure_column(connection: sqlite3.Connection, table_name: str, column_name: str, column_definition: str) -> None:
-    existing_columns = {
-        row["name"]
-        for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
-    }
-    if column_name not in existing_columns:
-        connection.execute(
-            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
-        )
+def _ensure_column(engine: Engine, table_name: str, column_name: str, column_definition: str) -> None:
+    existing_columns = {column["name"] for column in inspect(engine).get_columns(table_name)}
+    if column_name in existing_columns:
+        return
+
+    with engine.begin() as connection:
+        connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"))
