@@ -1,20 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { FileText } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, type NavigateFunction } from "react-router-dom";
 
 import { fetchHistory, type AnalyzeResponse, type HistoryResponseItem } from "@/lib/api";
-import { formatBackendDate, getStatusFromScore, type UiAnalysisStatus } from "@/lib/analysis-utils";
-import { mockHistory } from "@/data/mockData";
+import { formatBackendDate, formatScoreLevel, getStatusFromScore, type UiAnalysisStatus } from "@/lib/analysis-utils";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
-
 type UiHistoryItem = {
-  id: string;
+  id: number;
   nome: string;
   data: string;
   score: number;
+  nivel: string;
   status: UiAnalysisStatus;
 };
 
@@ -22,7 +21,7 @@ export default function Historico() {
   const navigate = useNavigate();
   const [items, setItems] = useState<UiHistoryItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [usingFallback, setUsingFallback] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -34,23 +33,15 @@ export default function Historico() {
         }
 
         setItems(mapHistoryToUi(response));
-        setUsingFallback(false);
+        setError(null);
       })
-      .catch(() => {
+      .catch((fetchError) => {
         if (!active) {
           return;
         }
 
-        setItems(
-          mockHistory.map((item) => ({
-            id: item.id,
-            nome: item.nome,
-            data: item.data,
-            score: item.score,
-            status: normalizeStatus(item.status),
-          })),
-        );
-        setUsingFallback(true);
+        setItems([]);
+        setError(fetchError instanceof Error ? fetchError.message : "Nao foi possivel carregar o historico.");
       })
       .finally(() => {
         if (active) {
@@ -67,11 +58,11 @@ export default function Historico() {
     if (isLoading) {
       return "Carregando historico...";
     }
-    if (usingFallback) {
-      return "Historico exibido com dados de demonstracao.";
+    if (error) {
+      return error;
     }
     return "Nenhuma analise registrada ate o momento.";
-  }, [isLoading, usingFallback]);
+  }, [error, isLoading]);
 
   return (
     <div className="space-y-6">
@@ -95,6 +86,7 @@ export default function Historico() {
                 <TableRow>
                   <TableHead>Documento</TableHead>
                   <TableHead>Data</TableHead>
+                  <TableHead>Nivel</TableHead>
                   <TableHead className="text-center">Score</TableHead>
                   <TableHead className="text-center">Status</TableHead>
                 </TableRow>
@@ -113,6 +105,7 @@ export default function Historico() {
                       </div>
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">{item.data}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{item.nivel}</TableCell>
                     <TableCell className="text-center">
                       <span
                         className={`text-sm font-semibold ${
@@ -138,33 +131,24 @@ export default function Historico() {
 
 function mapHistoryToUi(items: HistoryResponseItem[]): UiHistoryItem[] {
   return items.map((item) => ({
-    id: item.id.toString(),
+    id: item.id,
     nome: item.filename,
     data: formatBackendDate(item.data_criacao),
     score: item.score,
+    nivel: formatScoreLevel(item.nivel),
     status: getStatusFromScore(item.score),
   }));
 }
 
-function normalizeStatus(value: string): UiAnalysisStatus {
-  if (value === "Aprovado") {
-    return "Aprovado";
-  }
-  if (value === "Revisao" || value === "RevisÃ£o") {
-    return "Revisao";
-  }
-  return "Reprovado";
-}
-
-function handleOpenAnalysis(item: UiHistoryItem, navigate: ReturnType<typeof useNavigate>) {
+function handleOpenAnalysis(item: UiHistoryItem, navigate: NavigateFunction) {
   const analysis: AnalyzeResponse = {
-    analysis_id: Number(item.id),
+    analysis_id: item.id,
     filename: item.nome,
     status: "processado",
     resultado: {
       mensagem: "Analise carregada do historico.",
       score: item.score,
-      nivel: item.status === "Aprovado" ? "alto" : item.status === "Revisao" ? "medio" : "baixo",
+      nivel: item.nivel.toLowerCase(),
     },
   };
 

@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -8,22 +10,41 @@ from services.art_integration import compare_cat_with_art
 from services.processor import process_file
 
 
-# API minima para hackathon: simples, clara e facil de conectar com qualquer frontend.
+def _resolve_allowed_origins() -> list[str]:
+    raw_origins = os.getenv("ALLOWED_ORIGINS", "").strip()
+    if not raw_origins:
+        return [
+            "http://127.0.0.1:8080",
+            "http://localhost:8080",
+            "http://127.0.0.1:4173",
+            "http://localhost:4173",
+        ]
+
+    return [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+
+
+def _has_value(value: object) -> bool:
+    return value is not None and str(value).strip() != ""
+
+
 app = FastAPI(
     title="CAT Analyzer Backend",
-    description="Backend minimo para upload, historico e demonstracao guiada de CAT.",
-    version="0.1.0",
+    description="Backend para upload, analise, historico e demonstracao guiada de CAT.",
+    version="0.2.0",
 )
+
+
+allowed_origins = _resolve_allowed_origins()
+allow_all_origins = "*" in allowed_origins
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["*"] if allow_all_origins else allowed_origins,
+    allow_credentials=not allow_all_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Inicializacao automatica do banco para a demo funcionar sem setup manual.
 init_db()
 
 
@@ -32,7 +53,9 @@ class CATARTInput(BaseModel):
     nome_profissional: str | None = None
     data_inicio: str | None = None
     data_fim: str | None = None
+    data_execucao: str | None = None
     descricao_servico: str | None = None
+    contratante: str | None = None
 
 
 class CATARTComparisonInput(BaseModel):
@@ -47,12 +70,11 @@ async def root() -> dict:
 
 @app.get("/demo")
 async def demo_payload() -> dict:
-    # Endpoint opcional para apresentacoes guiadas e testes rapidos de integracao.
     return {
         "filename": "CAT-DEMO-2026.pdf",
         "status": "processado",
         "resultado": {
-            "mensagem": "Documento demo processado com sucesso",
+            "mensagem": "Documento demo processado com sinais relevantes de risco e necessidade de revisao humana.",
             "score": 38,
             "nivel": "baixo",
         },
@@ -61,26 +83,54 @@ async def demo_payload() -> dict:
             "numero_art": "123456789",
             "data_inicio": "15/03/2023",
             "data_fim": "10/03/2023",
+            "data_execucao": "15/03/2023",
             "descricao_servico": "obra",
             "contratante": "Empresa X",
         },
         "validacao": {
-            "erros": ["Data de fim anterior a data de inicio"],
-            "alertas": ["Descricao generica"],
-            "inconsistencias": ["Periodo informado na CAT e incompativel com a ART vinculada"],
+            "valid": False,
+            "erros": ["Data de fim anterior a data de inicio."],
+            "alertas": ["Descricao muito generica, detalhe melhor o servico executado."],
+            "inconsistencias": ["Data de inicio da CAT esta antes do periodo registrado na ART."],
+            "score": 45,
+            "nivel": "baixo",
+        },
+        "comparacao_art": {
+            "consistente": False,
+            "inconsistencias": ["Data de inicio da CAT esta antes do periodo registrado na ART."],
+            "alertas": ["ART nao fornecida manualmente. Foi realizada busca automatica na base simulada."],
+            "resumo": "Os dados da CAT estao inconsistentes com a ART analisada, especialmente em campos essenciais do documento.",
+            "art_encontrada": {
+                "numero_art": "123456789",
+                "nome_profissional": "Joao Silva",
+                "data_inicio": "01/01/2023",
+                "data_fim": "01/02/2023",
+            },
         },
         "fraude": {
             "fraude_detectada": True,
             "nivel_risco": "alto",
+            "fraudes": ["Inconsistencia critica de datas", "Divergencia entre CAT e ART"],
+            "alertas": ["Descricao generica"],
             "indicadores": [
                 "Inconsistencia critica de datas",
-                "Descricao generica",
                 "Divergencia entre CAT e ART",
+                "Descricao generica",
+            ],
+            "detalhes": [
+                "Data de fim anterior a data de inicio.",
+                "Nome do profissional divergente entre CAT e ART.",
+                "Descricao generica pode indicar baixa qualidade ou fraude.",
             ],
         },
         "score_confiabilidade": {
             "score": 38,
             "nivel": "baixo",
+            "justificativa": [
+                "Erro critico reduz significativamente a confiabilidade: data inconsistente.",
+                "Inconsistencia reduz a seguranca da analise: periodo incompativel com a ART.",
+                "Alerta indica necessidade de revisao: descricao generica.",
+            ],
             "resumo": "Documento com baixa confiabilidade e necessidade de revisao antes da aprovacao.",
         },
         "feedback_inteligente": {
@@ -91,6 +141,13 @@ async def demo_payload() -> dict:
                 "Detalhar melhor a descricao do servico.",
                 "Confirmar a ART correspondente.",
             ],
+            "feedback": [
+                {
+                    "tipo": "erro",
+                    "mensagem": "A data de fim esta anterior a data de inicio.",
+                    "sugestao": "Verifique e corrija o periodo de execucao da obra.",
+                }
+            ],
         },
     }
 
@@ -100,10 +157,7 @@ async def history() -> list[dict]:
     try:
         return get_all_analyses()
     except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Falha ao buscar historico: {exc}",
-        ) from exc
+        raise HTTPException(status_code=500, detail="Falha interna ao buscar o historico.") from exc
 
 
 @app.get("/history/{analysis_id}")
@@ -111,10 +165,7 @@ async def history_by_id(analysis_id: int) -> dict:
     try:
         analysis = get_analysis_by_id(analysis_id)
     except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Falha ao buscar analise: {exc}",
-        ) from exc
+        raise HTTPException(status_code=500, detail="Falha interna ao buscar a analise.") from exc
 
     if analysis is None:
         raise HTTPException(status_code=404, detail="Analise nao encontrada.")
@@ -124,14 +175,17 @@ async def history_by_id(analysis_id: int) -> dict:
 
 @app.post("/compare-cat-art")
 async def compare_cat_art(payload: CATARTComparisonInput) -> dict:
+    cat_payload = payload.cat_data.model_dump()
+    if not any(_has_value(value) for value in cat_payload.values()):
+        raise HTTPException(status_code=400, detail="Informe ao menos um campo da CAT para realizar a comparacao.")
+
     try:
         art_payload = payload.art_data.model_dump() if payload.art_data else None
-        return compare_cat_with_art(payload.cat_data.model_dump(), art_payload)
+        return compare_cat_with_art(cat_payload, art_payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Falha ao comparar CAT com ART: {exc}",
-        ) from exc
+        raise HTTPException(status_code=500, detail="Falha interna ao comparar CAT com ART.") from exc
 
 
 @app.post("/analyze")
@@ -147,6 +201,7 @@ async def analyze_document(file: UploadFile = File(...)) -> dict:
                 "erros": persistence_payload.get("erros", []),
                 "alertas": persistence_payload.get("alertas", []),
                 "inconsistencias": persistence_payload.get("inconsistencias", []),
+                "analysis_payload": persistence_payload.get("analysis_payload", analysis_result),
             }
         )
         analysis_result["analysis_id"] = analysis_id
@@ -154,7 +209,4 @@ async def analyze_document(file: UploadFile = File(...)) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Falha ao processar o documento: {exc}",
-        ) from exc
+        raise HTTPException(status_code=500, detail="Falha interna ao processar o documento.") from exc

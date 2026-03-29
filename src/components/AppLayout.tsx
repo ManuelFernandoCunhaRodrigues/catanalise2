@@ -4,16 +4,16 @@ import { AppSidebar } from "@/components/AppSidebar";
 export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <SidebarProvider>
-      <div className="min-h-screen flex w-full">
+      <div className="flex min-h-screen w-full">
         <AppSidebar />
-        <div className="flex-1 flex flex-col min-w-0">
-          <header className="h-14 flex items-center border-b bg-card px-4 shrink-0">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <header className="flex h-14 shrink-0 items-center border-b bg-card px-4">
             <SidebarTrigger className="mr-4" />
             <span className="text-sm font-medium text-muted-foreground">
-              Deserdeck RH — Análise de Certidões de Acervo Técnico
+              Deserdeck RH | Analise de Certidoes de Acervo Tecnico
             </span>
           </header>
-          <main className="flex-1 p-4 md:p-6 overflow-auto bg-background">{children}</main>
+          <main className="flex-1 overflow-auto bg-background p-4 md:p-6">{children}</main>
         </div>
       </div>
     </SidebarProvider>

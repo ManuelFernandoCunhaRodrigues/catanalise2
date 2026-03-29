@@ -12,8 +12,8 @@ def save_analysis(data: Dict[str, Any]) -> int:
     with connection_context() as connection:
         cursor = connection.execute(
             """
-            INSERT INTO analyses (filename, score, nivel, erros, alertas, inconsistencias)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO analyses (filename, score, nivel, erros, alertas, inconsistencias, analysis_payload)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["filename"],
@@ -22,6 +22,7 @@ def save_analysis(data: Dict[str, Any]) -> int:
                 json.dumps(data.get("erros", []), ensure_ascii=False),
                 json.dumps(data.get("alertas", []), ensure_ascii=False),
                 json.dumps(data.get("inconsistencias", []), ensure_ascii=False),
+                json.dumps(data.get("analysis_payload"), ensure_ascii=False),
             ),
         )
         return int(cursor.lastrowid)
@@ -44,7 +45,7 @@ def get_analysis_by_id(analysis_id: int) -> Optional[Dict[str, Any]]:
     with connection_context() as connection:
         row = connection.execute(
             """
-            SELECT id, filename, score, nivel, erros, alertas, inconsistencias, data_criacao
+            SELECT id, filename, score, nivel, erros, alertas, inconsistencias, analysis_payload, data_criacao
             FROM analyses
             WHERE id = ?
             """,
