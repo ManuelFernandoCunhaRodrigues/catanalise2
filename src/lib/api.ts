@@ -28,10 +28,17 @@ export interface ArtComparisonResponse {
 export interface FraudResponse {
   fraude_detectada: boolean;
   nivel_risco: string;
+  score_fraude?: number;
   fraudes: string[];
   alertas: string[];
   indicadores: string[];
   detalhes: string[];
+  regras_avaliadas?: Array<{
+    codigo: string;
+    peso: number;
+    acionada: boolean;
+    explicacao: string;
+  }>;
 }
 
 export interface ReliabilityScoreResponse {
@@ -70,6 +77,11 @@ export interface AnalyzeResponse {
   fraude?: FraudResponse;
   score_confiabilidade?: ReliabilityScoreResponse;
   feedback_inteligente?: IntelligentFeedbackResponse;
+  processamento?: {
+    modo: string;
+    arquivo_salvo: string;
+    tempo_ms: number;
+  };
 }
 
 export interface HistoryResponseItem {
@@ -88,6 +100,18 @@ export interface HistoryDetailResponse extends HistoryResponseItem {
 }
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
+const API_TOKEN = import.meta.env.VITE_API_TOKEN;
+
+function buildHeaders(headers?: HeadersInit): HeadersInit {
+  if (!API_TOKEN) {
+    return headers ?? {};
+  }
+
+  return {
+    ...(headers ?? {}),
+    Authorization: `Bearer ${API_TOKEN}`,
+  };
+}
 
 export async function analyzeCatDocument(file: File): Promise<AnalyzeResponse> {
   const formData = new FormData();
@@ -95,6 +119,7 @@ export async function analyzeCatDocument(file: File): Promise<AnalyzeResponse> {
 
   const response = await fetch(`${API_BASE_URL}/analyze`, {
     method: "POST",
+    headers: buildHeaders(),
     body: formData,
   });
 
@@ -102,12 +127,16 @@ export async function analyzeCatDocument(file: File): Promise<AnalyzeResponse> {
 }
 
 export async function fetchHistory(): Promise<HistoryResponseItem[]> {
-  const response = await fetch(`${API_BASE_URL}/history`);
+  const response = await fetch(`${API_BASE_URL}/history`, {
+    headers: buildHeaders(),
+  });
   return handleJsonResponse<HistoryResponseItem[]>(response);
 }
 
 export async function fetchHistoryById(analysisId: number): Promise<HistoryDetailResponse> {
-  const response = await fetch(`${API_BASE_URL}/history/${analysisId}`);
+  const response = await fetch(`${API_BASE_URL}/history/${analysisId}`, {
+    headers: buildHeaders(),
+  });
   return handleJsonResponse<HistoryDetailResponse>(response);
 }
 

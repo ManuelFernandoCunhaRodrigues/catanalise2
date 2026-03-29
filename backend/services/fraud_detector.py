@@ -1,6 +1,6 @@
-from datetime import datetime
 from typing import Any, Optional
-import unicodedata
+
+from services.utils import build_document_payload, dedupe, has_value, normalize_text, parse_date
 
 
 GENERIC_DESCRIPTIONS = {
@@ -19,144 +19,186 @@ ESSENTIAL_FIELDS = [
 
 
 def detect_fraud(cat_data: dict[str, Any], art_data: dict[str, Any] | None = None) -> dict[str, Any]:
-    """
-    Lightweight fraud detector focused on explainable indicators for the hackathon flow.
-    """
-    normalized_cat = _normalize_payload(cat_data)
-    normalized_art = _normalize_payload(art_data or {})
+    normalized_cat = build_document_payload(cat_data)
+    normalized_art = build_document_payload(art_data or {})
 
     fraud_indicators: list[str] = []
     alert_indicators: list[str] = []
     details: list[str] = []
+    rules: list[dict[str, Any]] = []
+    fraud_score = 0
 
     date_result = check_date_inconsistency(normalized_cat)
     fraud_indicators.extend(date_result["fraudes"])
     alert_indicators.extend(date_result["alertas"])
     details.extend(date_result["detalhes"])
+    rules.extend(date_result["regras"])
+    fraud_score += date_result["score"]
 
     if art_data:
         art_result = compare_with_art(normalized_cat, normalized_art)
         fraud_indicators.extend(art_result["fraudes"])
         alert_indicators.extend(art_result["alertas"])
         details.extend(art_result["detalhes"])
+        rules.extend(art_result["regras"])
+        fraud_score += art_result["score"]
 
     pattern_result = detect_suspicious_patterns(normalized_cat)
     fraud_indicators.extend(pattern_result["fraudes"])
     alert_indicators.extend(pattern_result["alertas"])
     details.extend(pattern_result["detalhes"])
+    rules.extend(pattern_result["regras"])
+    fraud_score += pattern_result["score"]
 
     combined_result = _check_high_risk_combination(normalized_cat)
     fraud_indicators.extend(combined_result["fraudes"])
     details.extend(combined_result["detalhes"])
+    rules.extend(combined_result["regras"])
+    fraud_score += combined_result["score"]
 
-    deduped_fraudes = _dedupe(fraud_indicators)
-    deduped_alertas = _dedupe(alert_indicators)
-    deduped_details = _dedupe(details)
+    deduped_fraudes = dedupe(fraud_indicators)
+    deduped_alertas = dedupe(alert_indicators)
+    deduped_details = dedupe(details)
+    deduped_rules = _dedupe_rules(rules)
 
     risk = evaluate_risk(deduped_fraudes, deduped_alertas)
     return {
         "fraude_detectada": len(deduped_fraudes) > 0,
         "nivel_risco": risk,
+        "score_fraude": min(100, fraud_score),
         "fraudes": deduped_fraudes,
         "alertas": deduped_alertas,
         "indicadores": deduped_fraudes + deduped_alertas,
         "detalhes": deduped_details,
+        "regras_avaliadas": deduped_rules,
     }
 
 
-def check_date_inconsistency(cat_data: dict[str, Optional[str]]) -> dict[str, list[str]]:
+def check_date_inconsistency(cat_data: dict[str, Optional[str]]) -> dict[str, Any]:
     fraudes: list[str] = []
     alertas: list[str] = []
     detalhes: list[str] = []
+    regras: list[dict[str, Any]] = []
+    score = 0
 
-    start_date = _parse_date(cat_data.get("data_inicio") or cat_data.get("data_execucao"))
-    end_date = _parse_date(cat_data.get("data_fim"))
+    start_date = parse_date(cat_data.get("data_inicio") or cat_data.get("data_execucao"))
+    end_date = parse_date(cat_data.get("data_fim"))
 
     if start_date and end_date and end_date < start_date:
         fraudes.append("Inconsistencia critica de datas")
         detalhes.append("Data de fim anterior a data de inicio.")
+        regras.append(_build_rule("date_reverse_order", 35, True, "Periodo invertido entre inicio e fim."))
+        score += 35
 
     if start_date and end_date:
         duration_days = (end_date - start_date).days
         if duration_days <= 1:
             alertas.append("Duracao muito curta")
             detalhes.append("Duracao de execucao igual ou inferior a 1 dia. Verifique se o periodo esta correto.")
+            regras.append(_build_rule("short_duration", 10, True, "Duracao de execucao muito curta."))
+            score += 10
 
-    return {"fraudes": fraudes, "alertas": alertas, "detalhes": detalhes}
+    return {"fraudes": fraudes, "alertas": alertas, "detalhes": detalhes, "regras": regras, "score": score}
 
 
-def compare_with_art(cat_data: dict[str, Optional[str]], art_data: dict[str, Optional[str]]) -> dict[str, list[str]]:
+def compare_with_art(cat_data: dict[str, Optional[str]], art_data: dict[str, Optional[str]]) -> dict[str, Any]:
     fraudes: list[str] = []
     alertas: list[str] = []
     detalhes: list[str] = []
+    regras: list[dict[str, Any]] = []
+    score = 0
 
     if not art_data:
-        return {"fraudes": fraudes, "alertas": alertas, "detalhes": detalhes}
+        return {"fraudes": fraudes, "alertas": alertas, "detalhes": detalhes, "regras": regras, "score": score}
 
-    cat_name = _normalize_text(cat_data.get("nome_profissional"))
-    art_name = _normalize_text(art_data.get("nome_profissional"))
+    cat_name = normalize_text(cat_data.get("nome_profissional"))
+    art_name = normalize_text(art_data.get("nome_profissional"))
     if cat_name and art_name and cat_name != art_name:
         fraudes.append("Divergencia entre CAT e ART")
         detalhes.append("Nome do profissional divergente entre CAT e ART.")
+        regras.append(_build_rule("art_name_mismatch", 25, True, "Nome divergente em relacao a ART."))
+        score += 25
 
     for field_name in ("data_inicio", "data_fim"):
         cat_value = cat_data.get(field_name)
         art_value = art_data.get(field_name)
-        if _has_value(cat_value) and _has_value(art_value) and cat_value != art_value:
+        if has_value(cat_value) and has_value(art_value) and cat_value != art_value:
             fraudes.append("Divergencia entre CAT e ART")
-            detalhes.append(f"{_humanize_field(field_name)} diferente entre CAT e ART.")
+            detalhes.append(f"{field_name.replace('_', ' ').capitalize()} diferente entre CAT e ART.")
+            regras.append(_build_rule(f"{field_name}_art_mismatch", 20, True, f"{field_name} divergente em relacao a ART."))
+            score += 20
 
-    return {"fraudes": _dedupe(fraudes), "alertas": alertas, "detalhes": _dedupe(detalhes)}
+    return {"fraudes": dedupe(fraudes), "alertas": alertas, "detalhes": dedupe(detalhes), "regras": regras, "score": score}
 
 
-def detect_suspicious_patterns(cat_data: dict[str, Optional[str]]) -> dict[str, list[str]]:
+def detect_suspicious_patterns(cat_data: dict[str, Optional[str]]) -> dict[str, Any]:
     fraudes: list[str] = []
     alertas: list[str] = []
     detalhes: list[str] = []
+    regras: list[dict[str, Any]] = []
+    score = 0
 
-    missing_essential = [field for field in ESSENTIAL_FIELDS if not _has_value(cat_data.get(field))]
-    has_any_date = _has_value(cat_data.get("data_inicio")) or _has_value(cat_data.get("data_fim")) or _has_value(cat_data.get("data_execucao"))
+    missing_essential = [field for field in ESSENTIAL_FIELDS if not has_value(cat_data.get(field))]
+    has_any_date = has_value(cat_data.get("data_inicio")) or has_value(cat_data.get("data_fim")) or has_value(cat_data.get("data_execucao"))
 
     if len(missing_essential) >= 3 or {"nome_profissional", "numero_art"}.issubset(set(missing_essential)):
         fraudes.append("Campos criticos incompletos")
         detalhes.append("Ausencia de dados criticos no documento: " + ", ".join(missing_essential) + ".")
+        regras.append(_build_rule("missing_critical_fields", 30, True, "Ausencia de campos essenciais para autenticidade."))
+        score += 30
     elif missing_essential or not has_any_date:
         alertas.append("Campos importantes ausentes")
         missing_items = list(missing_essential)
         if not has_any_date:
             missing_items.append("datas")
         detalhes.append("Nem todos os campos esperados puderam ser confirmados: " + ", ".join(missing_items) + ".")
+        regras.append(_build_rule("missing_relevant_fields", 8, True, "Campos importantes nao puderam ser confirmados."))
+        score += 8
 
     numero_art = str(cat_data.get("numero_art") or "").strip()
     if numero_art and any(not char.isdigit() for char in numero_art):
         fraudes.append("Numero ART invalido")
         detalhes.append("Numero ART contem letras ou caracteres nao numericos.")
+        regras.append(_build_rule("invalid_art_number", 25, True, "Numero ART contem caracteres invalidos."))
+        score += 25
     elif numero_art and len(numero_art) < 6:
         alertas.append("Numero ART suspeito")
         detalhes.append("Numero ART muito curto. Revise a numeracao informada.")
+        regras.append(_build_rule("short_art_number", 8, True, "Numero ART fora do tamanho esperado."))
+        score += 8
 
     descricao = str(cat_data.get("descricao_servico") or "").strip()
-    normalized_description = _normalize_text(descricao)
+    normalized_description = normalize_text(descricao)
     if normalized_description in GENERIC_DESCRIPTIONS:
         alertas.append("Descricao generica")
         detalhes.append("Descricao generica pode indicar baixa qualidade ou fraude.")
+        regras.append(_build_rule("generic_description", 10, True, "Descricao excessivamente generica."))
+        score += 10
 
     if descricao and len(descricao) < 20:
         alertas.append("Texto muito curto")
         detalhes.append("Descricao do servico muito curta para sustentar validacao tecnica.")
+        regras.append(_build_rule("short_description", 8, True, "Descricao curta demais para validacao documental."))
+        score += 8
 
     if descricao and _has_repeated_data(descricao):
         alertas.append("Padrao repetitivo")
         detalhes.append("Texto com repeticao excessiva, o que pode indicar documento montado artificialmente.")
+        regras.append(_build_rule("repetitive_text", 12, True, "Texto com padrao repetitivo."))
+        score += 12
 
     if descricao and not _has_technical_detail(descricao):
         alertas.append("Ausencia de detalhes tecnicos")
         detalhes.append("Nao foram encontrados termos tecnicos suficientes na descricao do servico.")
+        regras.append(_build_rule("low_technical_density", 10, True, "Descricao com baixa densidade tecnica."))
+        score += 10
 
     return {
-        "fraudes": _dedupe(fraudes),
-        "alertas": _dedupe(alertas),
-        "detalhes": _dedupe(detalhes),
+        "fraudes": dedupe(fraudes),
+        "alertas": dedupe(alertas),
+        "detalhes": dedupe(detalhes),
+        "regras": regras,
+        "score": score,
     }
 
 
@@ -171,13 +213,15 @@ def evaluate_risk(fraudes: list[str], alertas: list[str]) -> str:
     return "baixo"
 
 
-def _check_high_risk_combination(cat_data: dict[str, Optional[str]]) -> dict[str, list[str]]:
+def _check_high_risk_combination(cat_data: dict[str, Optional[str]]) -> dict[str, Any]:
     fraudes: list[str] = []
     detalhes: list[str] = []
+    regras: list[dict[str, Any]] = []
+    score = 0
 
-    descricao = _normalize_text(cat_data.get("descricao_servico"))
-    start_date = _parse_date(cat_data.get("data_inicio") or cat_data.get("data_execucao"))
-    end_date = _parse_date(cat_data.get("data_fim"))
+    descricao = normalize_text(cat_data.get("descricao_servico"))
+    start_date = parse_date(cat_data.get("data_inicio") or cat_data.get("data_execucao"))
+    end_date = parse_date(cat_data.get("data_fim"))
     numero_art = str(cat_data.get("numero_art") or "").strip()
 
     short_duration = False
@@ -189,55 +233,15 @@ def _check_high_risk_combination(cat_data: dict[str, Optional[str]]) -> dict[str
 
     if generic_description and short_duration and invalid_art:
         fraudes.append("Combinacao de alto risco")
-        detalhes.append(
-            "Combinacao de descricao generica, duracao curta e ART invalida indica documento possivelmente falso."
-        )
+        detalhes.append("Combinacao de descricao generica, duracao curta e ART invalida indica documento possivelmente falso.")
+        regras.append(_build_rule("high_risk_combination", 30, True, "Multiplos sinais fracos combinados elevam o risco."))
+        score += 30
 
-    return {"fraudes": fraudes, "detalhes": detalhes}
-
-
-def _normalize_payload(data: Optional[dict[str, Any]]) -> dict[str, Optional[str]]:
-    if not data:
-        return {}
-    return {
-        "nome_profissional": _clean_value(data.get("nome_profissional")),
-        "numero_art": _clean_value(data.get("numero_art")),
-        "data_inicio": _clean_value(data.get("data_inicio")),
-        "data_fim": _clean_value(data.get("data_fim")),
-        "data_execucao": _clean_value(data.get("data_execucao")),
-        "descricao_servico": _clean_value(data.get("descricao_servico")),
-        "contratante": _clean_value(data.get("contratante")),
-    }
-
-
-def _clean_value(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    cleaned = str(value).strip()
-    return cleaned or None
-
-
-def _parse_date(value: Any) -> Optional[datetime.date]:
-    if not _has_value(value):
-        return None
-    try:
-        return datetime.strptime(str(value), "%d/%m/%Y").date()
-    except ValueError:
-        return None
-
-
-def _has_value(value: Any) -> bool:
-    return value is not None and str(value).strip() != ""
-
-
-def _normalize_text(value: Any) -> str:
-    normalized = unicodedata.normalize("NFKD", str(value or "").lower().strip())
-    without_accents = "".join(char for char in normalized if not unicodedata.combining(char))
-    return " ".join(without_accents.split())
+    return {"fraudes": fraudes, "detalhes": detalhes, "regras": regras, "score": score}
 
 
 def _has_repeated_data(text: str) -> bool:
-    words = [word for word in _normalize_text(text).split(" ") if word]
+    words = [word for word in normalize_text(text).split(" ") if word]
     if len(words) < 4:
         return False
     return len(set(words)) <= max(1, len(words) // 3)
@@ -260,23 +264,25 @@ def _has_technical_detail(text: str) -> bool:
         "drenagem",
         "pavimentacao",
     }
-    normalized = set(_normalize_text(text).split())
+    normalized = set(normalize_text(text).split())
     return len(normalized.intersection(technical_terms)) > 0
 
 
-def _humanize_field(field_name: str) -> str:
-    labels = {
-        "data_inicio": "Data de inicio",
-        "data_fim": "Data de fim",
+def _build_rule(code: str, weight: int, triggered: bool, explanation: str) -> dict[str, Any]:
+    return {
+        "codigo": code,
+        "peso": weight,
+        "acionada": triggered,
+        "explicacao": explanation,
     }
-    return labels.get(field_name, field_name)
 
 
-def _dedupe(items: list[str]) -> list[str]:
+def _dedupe_rules(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen = set()
-    result: list[str] = []
+    result: list[dict[str, Any]] = []
     for item in items:
-        if item not in seen:
-            seen.add(item)
+        key = item["codigo"]
+        if key not in seen:
+            seen.add(key)
             result.append(item)
     return result

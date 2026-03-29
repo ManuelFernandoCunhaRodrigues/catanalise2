@@ -1,9 +1,9 @@
 import re
-import unicodedata
 from typing import Optional
 
+from services.utils import DATE_PATTERN, clean_optional_str, normalize_spaces, normalize_text
 
-DATE_PATTERN = r"\d{2}/\d{2}/\d{4}"
+
 SECTION_BREAK_LABELS = (
     "numero art",
     "art",
@@ -11,20 +11,19 @@ SECTION_BREAK_LABELS = (
     "cliente",
     "responsavel tecnico",
     "nome do profissional",
+    "nome profissional",
     "descricao do servico",
     "descricao dos servicos",
     "objeto",
     "atividades executadas",
+    "escopo",
 )
 
 
 def extract_fields(text: str) -> dict[str, Optional[str]]:
-    """
-    Extracts the main CAT fields with lightweight heuristics that are resilient to OCR noise.
-    """
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    normalized_lines = [_normalize_ascii(line) for line in lines]
-    normalized_text = _normalize_ascii(_normalize_spaces(text))
+    normalized_lines = [normalize_text(line) for line in lines]
+    normalized_text = normalize_text(normalize_spaces(text))
 
     range_start, range_end = _extract_date_range(normalized_text)
     execution_date = _search_first([rf"\b({DATE_PATTERN})\b"], normalized_text)
@@ -44,12 +43,19 @@ def extract_fields(text: str) -> dict[str, Optional[str]]:
         "nome_profissional": _extract_named_value(
             lines,
             normalized_lines,
-            ["nome do profissional", "profissional", "responsavel tecnico", "engenheiro responsavel"],
+            [
+                "nome do profissional",
+                "nome profissional",
+                "profissional",
+                "responsavel tecnico",
+                "engenheiro responsavel",
+            ],
         ),
         "numero_art": _search_first(
             [
                 r"\bart(?:\s|:|n[o.]*){0,3}(\d{6,})\b",
                 r"\b(?:registro|numero da art|n art)\s*:?\s*(\d{6,})\b",
+                r"\b(?:art numero|art no|art n)\s*:?\s*(\d{6,})\b",
             ],
             normalized_text,
         ),
@@ -66,7 +72,7 @@ def extract_fields(text: str) -> dict[str, Optional[str]]:
         "contratante": _extract_named_value(
             lines,
             normalized_lines,
-            ["contratante", "cliente", "tomador", "empresa contratante"],
+            ["contratante", "cliente", "tomador", "empresa contratante", "contratante tomador"],
         ),
     }
 
@@ -108,11 +114,7 @@ def _extract_date_from_labels(lines: list[str], normalized_lines: list[str], lab
 
 
 def _extract_date_range(normalized_text: str) -> tuple[Optional[str], Optional[str]]:
-    match = re.search(
-        rf"\b({DATE_PATTERN})\s*(?:a|ate|-|/)\s*({DATE_PATTERN})\b",
-        normalized_text,
-        flags=re.IGNORECASE,
-    )
+    match = re.search(rf"\b({DATE_PATTERN})\s*(?:a|ate|-|/)\s*({DATE_PATTERN})\b", normalized_text, flags=re.IGNORECASE)
     if not match:
         return None, None
 
@@ -120,7 +122,14 @@ def _extract_date_range(normalized_text: str) -> tuple[Optional[str], Optional[s
 
 
 def _extract_description(lines: list[str], normalized_lines: list[str]) -> Optional[str]:
-    labels = ["descricao do servico", "descricao dos servicos", "objeto", "atividades executadas"]
+    labels = [
+        "descricao do servico",
+        "descricao dos servicos",
+        "objeto",
+        "atividades executadas",
+        "escopo",
+        "servicos executados",
+    ]
 
     for index, normalized_line in enumerate(normalized_lines):
         if not any(label in normalized_line for label in labels):
@@ -139,14 +148,23 @@ def _extract_description(lines: list[str], normalized_lines: list[str]) -> Optio
             if cleaned_candidate:
                 collected.append(cleaned_candidate)
 
-            if len(" ".join(collected)) >= 160:
+            if len(" ".join(collected)) >= 220:
                 break
 
         if collected:
             return _cleanup_text(" ".join(collected))
 
     meaningful_lines = [line.strip() for line in lines if len(line.strip()) > 25]
-    return _cleanup_text(meaningful_lines[0]) if meaningful_lines else None
+    if meaningful_lines:
+        return _cleanup_text(meaningful_lines[0])
+
+    return _search_first(
+        [
+            r"(execucao\s+de\s+[^.]{10,180})",
+            r"(servic[oa]s?\s+executad[oa]s?\s+[^.]{10,180})",
+        ],
+        normalize_spaces(" ".join(lines)),
+    )
 
 
 def _extract_next_meaningful_line(lines: list[str], normalized_lines: list[str], start_index: int) -> Optional[str]:
@@ -177,20 +195,11 @@ def _search_first(patterns: list[str], text: str) -> Optional[str]:
     return None
 
 
-def _normalize_spaces(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def _normalize_ascii(value: str) -> str:
-    normalized = unicodedata.normalize("NFKD", value)
-    without_accents = "".join(char for char in normalized if not unicodedata.combining(char))
-    return _normalize_spaces(without_accents.lower())
-
-
 def _cleanup_text(value: Optional[str]) -> Optional[str]:
-    if not value:
+    cleaned = clean_optional_str(value)
+    if not cleaned:
         return None
 
-    cleaned = re.sub(r"\s+", " ", value).strip(" :-")
+    cleaned = cleaned.strip(" :-")
     cleaned = re.sub(r"\b(?:cpf|cnpj|rnp|crea|art)\b.*$", "", cleaned, flags=re.IGNORECASE).strip(" :-")
     return cleaned or None

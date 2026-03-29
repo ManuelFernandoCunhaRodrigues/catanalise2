@@ -1,7 +1,9 @@
 from pathlib import Path
+from time import perf_counter
 from uuid import uuid4
 
 from fastapi import UploadFile
+from fastapi.concurrency import run_in_threadpool
 
 from services.art_integration import compare_cat_with_art
 from services.extractor import extract_text
@@ -17,75 +19,23 @@ UPLOADS_DIR = Path(__file__).resolve().parent.parent / "uploads"
 
 
 async def process_file(file: UploadFile) -> dict:
-    """
-    Executes the full CAT analysis pipeline used by the API.
-    """
     original_filename = _normalize_filename(file.filename)
+    started_at = perf_counter()
     file_bytes = await _read_and_validate_pdf(file)
 
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     stored_filename = f"{uuid4().hex}-{original_filename}"
     saved_path = UPLOADS_DIR / stored_filename
-    saved_path.write_bytes(file_bytes)
 
-    extracted_text = extract_text(file_bytes)
-    extracted_fields = extract_fields(extracted_text)
-
-    validation_result = validate_fields(extracted_fields)
-    art_comparison = compare_cat_with_art(extracted_fields)
-    merged_validation = _merge_validation_with_art(validation_result, art_comparison)
-    fraud_result = detect_fraud(extracted_fields, art_comparison.get("art_encontrada"))
-    reliability_score = calculate_score(merged_validation, fraud_result)
-    intelligent_feedback = generate_feedback(
-        {
-            "erros": merged_validation["erros"],
-            "alertas": merged_validation["alertas"],
-            "inconsistencias": merged_validation["inconsistencias"],
-            "fraudes": fraud_result["fraudes"],
-        }
-    )
-
-    result_payload = {
-        "filename": original_filename,
-        "status": "processado",
-        "resultado": {
-            "mensagem": _build_result_message(merged_validation, fraud_result, reliability_score),
-            "score": reliability_score["score"],
-            "nivel": reliability_score["nivel"],
-        },
-        "texto_extraido": extracted_text,
-        "dados_extraidos": extracted_fields,
-        "validacao": merged_validation,
-        "comparacao_art": art_comparison,
-        "fraude": fraud_result,
-        "score_confiabilidade": reliability_score,
-        "feedback_inteligente": intelligent_feedback,
-        "_persistencia": {
-            "score": reliability_score["score"],
-            "nivel": reliability_score["nivel"],
-            "erros": merged_validation["erros"],
-            "alertas": merged_validation["alertas"],
-            "inconsistencias": merged_validation["inconsistencias"],
-            "analysis_payload": {
-                "filename": original_filename,
-                "status": "processado",
-                "resultado": {
-                    "mensagem": _build_result_message(merged_validation, fraud_result, reliability_score),
-                    "score": reliability_score["score"],
-                    "nivel": reliability_score["nivel"],
-                },
-                "texto_extraido": extracted_text,
-                "dados_extraidos": extracted_fields,
-                "validacao": merged_validation,
-                "comparacao_art": art_comparison,
-                "fraude": fraud_result,
-                "score_confiabilidade": reliability_score,
-                "feedback_inteligente": intelligent_feedback,
-                "arquivo_salvo": saved_path.name,
-            },
-        },
+    await run_in_threadpool(saved_path.write_bytes, file_bytes)
+    result_payload = await run_in_threadpool(_run_analysis_pipeline, file_bytes, original_filename, saved_path.name)
+    processing = {
+        "modo": "threadpool",
+        "arquivo_salvo": saved_path.name,
+        "tempo_ms": round((perf_counter() - started_at) * 1000, 2),
     }
-
+    result_payload["processamento"] = processing
+    result_payload["_persistencia"]["analysis_payload"]["processamento"] = processing
     return result_payload
 
 
@@ -104,6 +54,55 @@ async def _read_and_validate_pdf(file: UploadFile) -> bytes:
         raise ValueError("Conteudo invalido. O arquivo enviado nao parece ser um PDF valido.")
 
     return file_bytes
+
+
+def _run_analysis_pipeline(file_bytes: bytes, original_filename: str, stored_filename: str) -> dict:
+    extracted_text = extract_text(file_bytes)
+    extracted_fields = extract_fields(extracted_text)
+    validation_result = validate_fields(extracted_fields)
+    art_comparison = compare_cat_with_art(extracted_fields)
+    merged_validation = _merge_validation_with_art(validation_result, art_comparison)
+    fraud_result = detect_fraud(extracted_fields, art_comparison.get("art_encontrada"))
+    reliability_score = calculate_score(merged_validation, fraud_result)
+    intelligent_feedback = generate_feedback(
+        {
+            "erros": merged_validation["erros"],
+            "alertas": merged_validation["alertas"],
+            "inconsistencias": merged_validation["inconsistencias"],
+            "fraudes": fraud_result["fraudes"],
+        }
+    )
+    result_message = _build_result_message(merged_validation, fraud_result, reliability_score)
+
+    analysis_payload = {
+        "filename": original_filename,
+        "status": "processado",
+        "resultado": {
+            "mensagem": result_message,
+            "score": reliability_score["score"],
+            "nivel": reliability_score["nivel"],
+        },
+        "texto_extraido": extracted_text,
+        "dados_extraidos": extracted_fields,
+        "validacao": merged_validation,
+        "comparacao_art": art_comparison,
+        "fraude": fraud_result,
+        "score_confiabilidade": reliability_score,
+        "feedback_inteligente": intelligent_feedback,
+        "arquivo_salvo": stored_filename,
+    }
+
+    return {
+        **analysis_payload,
+        "_persistencia": {
+            "score": reliability_score["score"],
+            "nivel": reliability_score["nivel"],
+            "erros": merged_validation["erros"],
+            "alertas": merged_validation["alertas"],
+            "inconsistencias": merged_validation["inconsistencias"],
+            "analysis_payload": analysis_payload,
+        },
+    }
 
 
 def _merge_validation_with_art(validation_result: dict, art_comparison: dict) -> dict:

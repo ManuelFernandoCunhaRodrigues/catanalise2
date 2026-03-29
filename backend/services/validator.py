@@ -1,6 +1,6 @@
-from datetime import datetime
 from typing import Any, Optional
-import unicodedata
+
+from services.utils import build_document_payload, dedupe, has_value, humanize_field, is_valid_date, normalize_text, parse_date
 
 
 REQUIRED_FIELDS = [
@@ -19,12 +19,9 @@ GENERIC_DESCRIPTIONS = {
 
 
 def validate_cat(data: dict[str, Any]) -> dict[str, Any]:
-    """
-    Central validation flow for the CAT data extracted from the document.
-    """
-    normalized = _normalize_input(data)
+    normalized = build_document_payload(data)
 
-    errors = _dedupe(validate_required_fields(normalized) + validate_format(normalized))
+    errors = dedupe(validate_required_fields(normalized) + validate_format(normalized))
     consistency_result = validate_consistency(normalized)
     alerts = detect_suspicious_patterns(normalized)
 
@@ -48,13 +45,13 @@ def validate_required_fields(data: dict[str, Any]) -> list[str]:
     errors: list[str] = []
 
     for field_name in REQUIRED_FIELDS:
-        if not _has_value(data.get(field_name)):
+        if not has_value(data.get(field_name)):
             errors.append(f"Campo obrigatorio ausente: {field_name}. Preencha esse dado para concluir a analise.")
 
-    if _has_value(data.get("data_inicio")) and not _has_value(data.get("data_fim")):
+    if has_value(data.get("data_inicio")) and not has_value(data.get("data_fim")):
         errors.append("Data de fim ausente. Informe a data final quando houver data de inicio.")
 
-    if _has_value(data.get("numero_art")) and not _has_value(data.get("descricao_servico")):
+    if has_value(data.get("numero_art")) and not has_value(data.get("descricao_servico")):
         errors.append("ART informada sem descricao do servico. Descreva a atividade vinculada a ART.")
 
     return errors
@@ -64,34 +61,26 @@ def validate_format(data: dict[str, Any]) -> list[str]:
     errors: list[str] = []
 
     numero_art = data.get("numero_art")
-    if _has_value(numero_art) and not str(numero_art).isdigit():
+    if has_value(numero_art) and not str(numero_art).isdigit():
         errors.append("Numero ART invalido. Use apenas numeros, sem letras ou simbolos.")
 
     for field_name in ("data_inicio", "data_fim", "data_execucao"):
         field_value = data.get(field_name)
-        if _has_value(field_value) and not _is_valid_date(str(field_value)):
-            errors.append(f"{_humanize_field(field_name)} invalida. Use o formato DD/MM/AAAA.")
+        if has_value(field_value) and not is_valid_date(str(field_value)):
+            errors.append(f"{humanize_field(field_name)} invalida. Use o formato DD/MM/AAAA.")
 
     return errors
 
 
 def validate_consistency(data: dict[str, Any]) -> dict[str, list[str]]:
     inconsistencies: list[str] = []
-    today = datetime.now().date()
-
-    start_date = _parse_date(data.get("data_inicio") or data.get("data_execucao"))
-    end_date = _parse_date(data.get("data_fim"))
-
-    if start_date and start_date > today:
-        inconsistencies.append("Data de inicio no futuro. Verifique se a execucao realmente ja ocorreu.")
-
-    if end_date and end_date > today:
-        inconsistencies.append("Data de fim no futuro. Confirme se a CAT nao foi preenchida com data incorreta.")
+    start_date = parse_date(data.get("data_inicio") or data.get("data_execucao"))
+    end_date = parse_date(data.get("data_fim"))
 
     if start_date and end_date and end_date < start_date:
         inconsistencies.append("Data de fim anterior a data de inicio. Ajuste o periodo informado.")
 
-    return {"inconsistencias": _dedupe(inconsistencies)}
+    return {"inconsistencias": dedupe(inconsistencies)}
 
 
 def detect_suspicious_patterns(data: dict[str, Any]) -> list[str]:
@@ -101,9 +90,12 @@ def detect_suspicious_patterns(data: dict[str, Any]) -> list[str]:
     if descricao and len(descricao) < 20:
         alerts.append("Descricao muito curta. Inclua mais detalhes para tornar a analise confiavel.")
 
-    normalized_description = _normalize_text(descricao)
+    normalized_description = normalize_text(descricao)
     if normalized_description in GENERIC_DESCRIPTIONS:
         alerts.append("Descricao muito generica, detalhe melhor o servico executado.")
+
+    if descricao and len(normalized_description.split()) < 4:
+        alerts.append("Ausencia de detalhes tecnicos na descricao do servico.")
 
     nome_profissional = str(data.get("nome_profissional") or "").strip()
     if nome_profissional and len(nome_profissional.split()) < 2:
@@ -113,14 +105,14 @@ def detect_suspicious_patterns(data: dict[str, Any]) -> list[str]:
     if numero_art and (not numero_art.isdigit() or len(numero_art) < 6):
         alerts.append("Numero ART suspeito ou muito curto. Revise a numeracao informada.")
 
-    start_date = _parse_date(data.get("data_inicio") or data.get("data_execucao"))
-    end_date = _parse_date(data.get("data_fim"))
+    start_date = parse_date(data.get("data_inicio") or data.get("data_execucao"))
+    end_date = parse_date(data.get("data_fim"))
     if start_date and end_date:
         duration_days = (end_date - start_date).days
         if duration_days <= 1:
             alerts.append("Periodo de execucao muito curto. Confirme se as datas estao corretas.")
 
-    return _dedupe(alerts)
+    return dedupe(alerts)
 
 
 def calculate_score(*, errors: list[str], inconsistencies: list[str], alerts: list[str]) -> dict[str, Any]:
@@ -141,9 +133,6 @@ def calculate_score(*, errors: list[str], inconsistencies: list[str], alerts: li
 
 
 def validate_fields(fields: dict[str, Optional[str]]) -> dict[str, Any]:
-    """
-    Compatibility wrapper for the extraction output used by the current API.
-    """
     payload = {
         "nome_profissional": fields.get("nome_profissional"),
         "numero_art": fields.get("numero_art"),
@@ -154,65 +143,3 @@ def validate_fields(fields: dict[str, Optional[str]]) -> dict[str, Any]:
         "contratante": fields.get("contratante"),
     }
     return validate_cat(payload)
-
-
-def _normalize_input(data: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "nome_profissional": _clean_value(data.get("nome_profissional")),
-        "numero_art": _clean_value(data.get("numero_art")),
-        "data_inicio": _clean_value(data.get("data_inicio")),
-        "data_fim": _clean_value(data.get("data_fim")),
-        "data_execucao": _clean_value(data.get("data_execucao")),
-        "descricao_servico": _clean_value(data.get("descricao_servico")),
-        "contratante": _clean_value(data.get("contratante")),
-    }
-
-
-def _clean_value(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    cleaned = str(value).strip()
-    return cleaned or None
-
-
-def _has_value(value: Any) -> bool:
-    return value is not None and str(value).strip() != ""
-
-
-def _is_valid_date(value: str) -> bool:
-    return _parse_date(value) is not None
-
-
-def _parse_date(value: Any) -> Optional[datetime.date]:
-    if not _has_value(value):
-        return None
-
-    try:
-        return datetime.strptime(str(value), "%d/%m/%Y").date()
-    except ValueError:
-        return None
-
-
-def _humanize_field(field_name: str) -> str:
-    labels = {
-        "data_inicio": "Data de inicio",
-        "data_fim": "Data de fim",
-        "data_execucao": "Data de execucao",
-    }
-    return labels.get(field_name, field_name)
-
-
-def _normalize_text(value: str) -> str:
-    normalized = unicodedata.normalize("NFKD", value.lower().strip())
-    without_accents = "".join(char for char in normalized if not unicodedata.combining(char))
-    return without_accents
-
-
-def _dedupe(items: list[str]) -> list[str]:
-    seen = set()
-    result: list[str] = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            result.append(item)
-    return result

@@ -1,9 +1,11 @@
 import os
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from auth import require_api_token
 from database.db import init_db
 from database.repository import get_all_analyses, get_analysis_by_id, save_analysis
 from services.art_integration import compare_cat_with_art
@@ -30,7 +32,7 @@ def _has_value(value: object) -> bool:
 app = FastAPI(
     title="CAT Analyzer Backend",
     description="Backend para upload, analise, historico e demonstracao guiada de CAT.",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 
@@ -66,6 +68,11 @@ class CATARTComparisonInput(BaseModel):
 @app.get("/")
 async def root() -> dict:
     return {"status": "API rodando"}
+
+
+@app.get("/health")
+async def health() -> dict:
+    return {"status": "ok"}
 
 
 @app.get("/demo")
@@ -110,17 +117,17 @@ async def demo_payload() -> dict:
         "fraude": {
             "fraude_detectada": True,
             "nivel_risco": "alto",
+            "score_fraude": 85,
             "fraudes": ["Inconsistencia critica de datas", "Divergencia entre CAT e ART"],
             "alertas": ["Descricao generica"],
-            "indicadores": [
-                "Inconsistencia critica de datas",
-                "Divergencia entre CAT e ART",
-                "Descricao generica",
-            ],
+            "indicadores": ["Inconsistencia critica de datas", "Divergencia entre CAT e ART", "Descricao generica"],
             "detalhes": [
                 "Data de fim anterior a data de inicio.",
                 "Nome do profissional divergente entre CAT e ART.",
                 "Descricao generica pode indicar baixa qualidade ou fraude.",
+            ],
+            "regras_avaliadas": [
+                {"codigo": "date_reverse_order", "peso": 35, "acionada": True, "explicacao": "Periodo invertido entre inicio e fim."}
             ],
         },
         "score_confiabilidade": {
@@ -142,28 +149,24 @@ async def demo_payload() -> dict:
                 "Confirmar a ART correspondente.",
             ],
             "feedback": [
-                {
-                    "tipo": "erro",
-                    "mensagem": "A data de fim esta anterior a data de inicio.",
-                    "sugestao": "Verifique e corrija o periodo de execucao da obra.",
-                }
+                {"tipo": "erro", "mensagem": "A data de fim esta anterior a data de inicio.", "sugestao": "Verifique e corrija o periodo de execucao da obra."}
             ],
         },
     }
 
 
 @app.get("/history")
-async def history() -> list[dict]:
+async def history(_: None = Depends(require_api_token)) -> list[dict]:
     try:
-        return get_all_analyses()
+        return await run_in_threadpool(get_all_analyses)
     except Exception as exc:
         raise HTTPException(status_code=500, detail="Falha interna ao buscar o historico.") from exc
 
 
 @app.get("/history/{analysis_id}")
-async def history_by_id(analysis_id: int) -> dict:
+async def history_by_id(analysis_id: int, _: None = Depends(require_api_token)) -> dict:
     try:
-        analysis = get_analysis_by_id(analysis_id)
+        analysis = await run_in_threadpool(get_analysis_by_id, analysis_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail="Falha interna ao buscar a analise.") from exc
 
@@ -174,14 +177,14 @@ async def history_by_id(analysis_id: int) -> dict:
 
 
 @app.post("/compare-cat-art")
-async def compare_cat_art(payload: CATARTComparisonInput) -> dict:
+async def compare_cat_art(payload: CATARTComparisonInput, _: None = Depends(require_api_token)) -> dict:
     cat_payload = payload.cat_data.model_dump()
     if not any(_has_value(value) for value in cat_payload.values()):
         raise HTTPException(status_code=400, detail="Informe ao menos um campo da CAT para realizar a comparacao.")
 
     try:
         art_payload = payload.art_data.model_dump() if payload.art_data else None
-        return compare_cat_with_art(cat_payload, art_payload)
+        return await run_in_threadpool(compare_cat_with_art, cat_payload, art_payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -189,11 +192,12 @@ async def compare_cat_art(payload: CATARTComparisonInput) -> dict:
 
 
 @app.post("/analyze")
-async def analyze_document(file: UploadFile = File(...)) -> dict:
+async def analyze_document(file: UploadFile = File(...), _: None = Depends(require_api_token)) -> dict:
     try:
         analysis_result = await process_file(file)
         persistence_payload = analysis_result.pop("_persistencia", None) or {}
-        analysis_id = save_analysis(
+        analysis_id = await run_in_threadpool(
+            save_analysis,
             {
                 "filename": analysis_result["filename"],
                 "score": persistence_payload.get("score", analysis_result["resultado"]["score"]),
@@ -202,7 +206,7 @@ async def analyze_document(file: UploadFile = File(...)) -> dict:
                 "alertas": persistence_payload.get("alertas", []),
                 "inconsistencias": persistence_payload.get("inconsistencias", []),
                 "analysis_payload": persistence_payload.get("analysis_payload", analysis_result),
-            }
+            },
         )
         analysis_result["analysis_id"] = analysis_id
         return analysis_result

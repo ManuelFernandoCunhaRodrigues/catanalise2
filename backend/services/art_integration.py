@@ -1,7 +1,7 @@
-from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Any, Optional
-import unicodedata
+
+from services.utils import build_document_payload, dedupe, normalize_text, parse_date
 
 
 ART_DATABASE = {
@@ -21,10 +21,7 @@ ART_DATABASE = {
 
 
 def compare_cat_with_art(cat_data: dict[str, Any], art_data: dict[str, Any] | None = None) -> dict[str, Any]:
-    """
-    Compares CAT data with the ART provided manually or resolved from the simulated base.
-    """
-    normalized_cat = _normalize_document(cat_data)
+    normalized_cat = build_document_payload(cat_data)
     resolved_art, resolution_alerts = _resolve_art(normalized_cat, art_data)
 
     inconsistencies: list[str] = []
@@ -35,8 +32,8 @@ def compare_cat_with_art(cat_data: dict[str, Any], art_data: dict[str, Any] | No
     inconsistencies.extend(compare_dates(normalized_cat, resolved_art))
     alerts.extend(compare_description_vs_period(normalized_cat))
 
-    inconsistencies = _dedupe(inconsistencies)
-    alerts = _dedupe(alerts)
+    inconsistencies = dedupe(inconsistencies)
+    alerts = dedupe(alerts)
 
     return {
         "consistente": len(inconsistencies) == 0,
@@ -49,7 +46,6 @@ def compare_cat_with_art(cat_data: dict[str, Any], art_data: dict[str, Any] | No
 
 def compare_art_number(cat_data: dict[str, Optional[str]], art_data: Optional[dict[str, Optional[str]]]) -> list[str]:
     inconsistencies: list[str] = []
-
     cat_art = cat_data.get("numero_art")
     art_number = (art_data or {}).get("numero_art")
 
@@ -61,14 +57,13 @@ def compare_art_number(cat_data: dict[str, Optional[str]], art_data: Optional[di
 
 def compare_professional(cat_data: dict[str, Optional[str]], art_data: Optional[dict[str, Optional[str]]]) -> list[str]:
     inconsistencies: list[str] = []
-
     cat_name = cat_data.get("nome_profissional")
     art_name = (art_data or {}).get("nome_profissional")
 
     if not cat_name or not art_name:
         return inconsistencies
 
-    similarity = SequenceMatcher(None, _normalize_text(cat_name), _normalize_text(art_name)).ratio()
+    similarity = SequenceMatcher(None, normalize_text(cat_name), normalize_text(art_name)).ratio()
     if similarity < 0.88:
         inconsistencies.append("Nome do profissional divergente ou pouco similar entre CAT e ART.")
 
@@ -81,10 +76,10 @@ def compare_dates(cat_data: dict[str, Optional[str]], art_data: Optional[dict[st
     if not art_data:
         return inconsistencies
 
-    cat_start = _parse_date(cat_data.get("data_inicio") or cat_data.get("data_execucao"))
-    cat_end = _parse_date(cat_data.get("data_fim"))
-    art_start = _parse_date(art_data.get("data_inicio"))
-    art_end = _parse_date(art_data.get("data_fim"))
+    cat_start = parse_date(cat_data.get("data_inicio") or cat_data.get("data_execucao"))
+    cat_end = parse_date(cat_data.get("data_fim"))
+    art_start = parse_date(art_data.get("data_inicio"))
+    art_end = parse_date(art_data.get("data_fim"))
 
     if cat_start and art_start and cat_start < art_start:
         inconsistencies.append("Data de inicio da CAT esta antes do periodo registrado na ART.")
@@ -97,16 +92,15 @@ def compare_dates(cat_data: dict[str, Optional[str]], art_data: Optional[dict[st
 
 def compare_description_vs_period(cat_data: dict[str, Optional[str]]) -> list[str]:
     alerts: list[str] = []
-
     description = str(cat_data.get("descricao_servico") or "").strip()
-    cat_start = _parse_date(cat_data.get("data_inicio") or cat_data.get("data_execucao"))
-    cat_end = _parse_date(cat_data.get("data_fim"))
+    cat_start = parse_date(cat_data.get("data_inicio") or cat_data.get("data_execucao"))
+    cat_end = parse_date(cat_data.get("data_fim"))
 
     if not description or not cat_start or not cat_end:
         return alerts
 
     duration_days = (cat_end - cat_start).days
-    normalized_description = _normalize_text(description)
+    normalized_description = normalize_text(description)
 
     if duration_days <= 3 and any(keyword in normalized_description for keyword in ("obra", "execucao", "residencial")):
         alerts.append("O periodo informado parece muito curto para a descricao do servico executado.")
@@ -122,9 +116,7 @@ def generate_summary(inconsistencies: list[str], alerts: list[str], art_data: Op
         )
 
     if alerts and art_data:
-        return (
-            "A CAT esta compativel com a ART consultada, mas ha alertas que merecem revisao para aumentar a seguranca da analise."
-        )
+        return "A CAT esta compativel com a ART consultada, mas ha alertas que merecem revisao para aumentar a seguranca da analise."
 
     if alerts:
         return (
@@ -142,7 +134,7 @@ def _resolve_art(cat_data: dict[str, Optional[str]], art_data: Optional[dict[str
     alerts: list[str] = []
 
     if art_data:
-        return _normalize_document(art_data), alerts
+        return build_document_payload(art_data), alerts
 
     cat_art_number = cat_data.get("numero_art")
     if not cat_art_number:
@@ -155,51 +147,4 @@ def _resolve_art(cat_data: dict[str, Optional[str]], art_data: Optional[dict[str
         alerts.append("ART nao encontrada na base simulada para o numero informado.")
         return None, alerts
 
-    return _normalize_document(fetched_art), alerts
-
-
-def _normalize_document(data: Optional[dict[str, Any]]) -> dict[str, Optional[str]]:
-    if not data:
-        return {}
-
-    return {
-        "numero_art": _clean_value(data.get("numero_art")),
-        "nome_profissional": _clean_value(data.get("nome_profissional")),
-        "data_inicio": _clean_value(data.get("data_inicio")),
-        "data_fim": _clean_value(data.get("data_fim")),
-        "data_execucao": _clean_value(data.get("data_execucao")),
-        "descricao_servico": _clean_value(data.get("descricao_servico")),
-        "contratante": _clean_value(data.get("contratante")),
-    }
-
-
-def _clean_value(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    cleaned = str(value).strip()
-    return cleaned or None
-
-
-def _parse_date(value: Optional[str]) -> Optional[datetime.date]:
-    if not value:
-        return None
-    try:
-        return datetime.strptime(value, "%d/%m/%Y").date()
-    except ValueError:
-        return None
-
-
-def _normalize_text(value: str) -> str:
-    normalized = unicodedata.normalize("NFKD", str(value).lower().strip())
-    without_accents = "".join(char for char in normalized if not unicodedata.combining(char))
-    return " ".join(without_accents.split())
-
-
-def _dedupe(items: list[str]) -> list[str]:
-    seen = set()
-    result: list[str] = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            result.append(item)
-    return result
+    return build_document_payload(fetched_art), alerts
